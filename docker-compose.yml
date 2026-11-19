@@ -1,0 +1,293 @@
+# ---------------------------------------------------------------------------
+# EOMS 生产编排：nginx（SPA + 反代）/ api / worker / beat / db / redis / minio
+#                + prometheus / grafana / loki / promtail
+# 说明：
+#   - 密钥全部由 .env 注入（参考 .env.docker.example），不入镜像、不入仓库；
+#   - db/redis/minio 不映射宿主端口，仅容器网络内可达；
+#   - api 无状态，可水平扩容：docker compose up -d --scale api=2
+# ---------------------------------------------------------------------------
+name: eoms
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-backend-environment: &backend-environment
+  EOMS_ENV: ${EOMS_ENV:-prod}
+  EOMS_DEBUG: "false"
+  EOMS_DATABASE_URL: postgresql+psycopg://eoms:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 必须在 .env 中设置}@db:5432/eoms
+  EOMS_REDIS_URL: redis://redis:6379/0
+  EOMS_CELERY_BROKER_URL: redis://redis:6379/1
+  EOMS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+  EOMS_CELERY_ALWAYS_EAGER: "false"
+  EOMS_STORAGE_BACKEND: minio
+  EOMS_MINIO_ENDPOINT: minio:9000
+  EOMS_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-eoms}
+  EOMS_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 必须在 .env 中设置}
+  EOMS_MINIO_BUCKET: ${MINIO_BUCKET:-eoms}
+  EOMS_MINIO_SECURE: "false"
+  EOMS_RLS_ENABLED: ${EOMS_RLS_ENABLED:-true}
+  EOMS_CORS_ORIGINS: ${EOMS_PUBLIC_ORIGIN:-http://localhost}
+  EOMS_TRUSTED_HOSTS: ${EOMS_TRUSTED_HOSTS:-*}
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: eoms-api:1.0.0
+  env_file:
+    - .env
+  environment:
+    <<: *backend-environment
+  volumes:
+    - eoms_storage:/app/.data
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio-init:
+      condition: service_completed_successfully
+  restart: unless-stopped
+  logging: *default-logging
+
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: eoms-web:1.0.0
+    container_name: eoms-nginx
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    logging: *default-logging
+
+  api:
+    <<: *backend
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "2"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+    environment:
+      <<: *backend-environment
+      EOMS_RUN_MIGRATIONS: "true"
+    expose:
+      - "8000"
+
+  worker:
+    <<: *backend
+    command: ["celery", "-A", "app.celery_app", "worker", "-Q", "eoms", "-l", "info", "--concurrency=4", "-n", "worker@%h"]
+    environment:
+      <<: *backend-environment
+      EOMS_RUN_MIGRATIONS: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping -t 5 >/dev/null 2>&1 || exit 1"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 60s
+
+  beat:
+    <<: *backend
+    command: ["celery", "-A", "app.celery_app", "beat", "-l", "info", "--schedule", "/app/.data/celerybeat-schedule"]
+    environment:
+      <<: *backend-environment
+      EOMS_RUN_MIGRATIONS: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'celery.*beat' >/dev/null || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  db:
+    image: postgres:16-alpine
+    container_name: eoms-db
+    environment:
+      POSTGRES_DB: eoms
+      POSTGRES_USER: eoms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 必须在 .env 中设置}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+      TZ: Asia/Shanghai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eoms -d eoms"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: eoms-redis
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:latest
+    container_name: eoms-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-eoms}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 必须在 .env 中设置}
+      TZ: Asia/Shanghai
+    volumes:
+      - miniodata:/data
+    restart: unless-stopped
+    logging: *default-logging
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: eoms-minio-init
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-eoms}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 必须在 .env 中设置}
+      MINIO_BUCKET: ${MINIO_BUCKET:-eoms}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        for i in $$(seq 1 30); do
+          if mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; then
+            break
+          fi
+          echo "等待 MinIO 就绪（$$i/30）..."
+          sleep 2
+        done
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        mc anonymous set none "local/$$MINIO_BUCKET" || true
+        echo "MinIO bucket $$MINIO_BUCKET 已就绪"
+    restart: "no"
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: eoms-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --web.external-url=/
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    logging: *default-logging
+
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: eoms-loki
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./deploy/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - lokidata:/loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3100/ready || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+  promtail:
+    image: grafana/promtail:3.3.2
+    container_name: eoms-promtail
+    command: ["-config.file=/etc/promtail/promtail-config.yml"]
+    volumes:
+      - ./deploy/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: eoms-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD 必须在 .env 中设置}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    depends_on:
+      - prometheus
+      - loki
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    logging: *default-logging
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  promdata:
+  lokidata:
+  grafanadata:
+  eoms_storage:
+
+networks:
+  default:
+    name: eoms-net
+    driver: bridge

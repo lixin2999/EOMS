@@ -1,0 +1,62 @@
+groups:
+  - name: eoms-api
+    interval: 30s
+    rules:
+      - alert: EomsApiDown
+        expr: up{job="eoms-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: eoms-api
+        annotations:
+          summary: "EOMS API 实例不可达"
+          description: "Prometheus 已连续 2 分钟无法抓取 {{ $labels.instance }} 的 /metrics，请检查容器与数据库连接。"
+
+      - alert: EomsApiHighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{job="eoms-api",status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total{job="eoms-api"}[5m])), 0.001)
+          ) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+          service: eoms-api
+        annotations:
+          summary: "EOMS API 5xx 比例超过 2%"
+          description: "最近 5 分钟 5xx 占比为 {{ $value | humanizePercentage }}，请结合 trace_id 排查日志。"
+
+      - alert: EomsApiSlowRequests
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="eoms-api"}[5m])) by (le)
+          ) > 1.5
+        for: 10m
+        labels:
+          severity: warning
+          service: eoms-api
+        annotations:
+          summary: "EOMS API P95 延迟超过 1.5s"
+          description: "当前 P95 延迟 {{ $value }}s，请检查慢 SQL、外部依赖或锁等待。"
+
+      - alert: EomsApiInFlightRequests
+        expr: sum(http_requests_inprogress{job="eoms-api"}) > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: eoms-api
+        annotations:
+          summary: "EOMS API 并发请求堆积"
+          description: "当前在途请求 {{ $value }} 个，可能存在慢请求或线程池耗尽。"
+
+      - alert: EomsPrometheusTargetMissing
+        expr: absent(up{job="eoms-api"})
+        for: 10m
+        labels:
+          severity: critical
+          service: prometheus
+        annotations:
+          summary: "EOMS 监控目标缺失"
+          description: "Prometheus 配置中已找不到 eoms-api 抓取目标。"
