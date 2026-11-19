@@ -214,6 +214,7 @@ export const iamApi = {
   depts: () => api.get('/iam/depts/tree'),
   createDept: (payload) => api.post('/iam/depts', payload),
   updateDept: (id, payload) => api.put(`/iam/depts/${id}`, payload),
+  deleteDept: (id) => api.del(`/iam/depts/${id}`),
   auditLogs: (params) => api.get('/iam/audit-logs', params),
   dicts: (dictType) => api.get('/iam/dicts', dictType ? { dict_type: dictType } : undefined),
   createDict: (payload) => api.post('/iam/dicts', payload),

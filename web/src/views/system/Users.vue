@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <h2>用户管理</h2>
-        <p>维护用户、部门、岗位与角色；重置密码后用户下次登录将强制改密，敏感手机号按权限脱敏展示。</p>
+        <p>账号开通：新建账号并分配部门、岗位与角色；启用/停用即时生效，重置密码后用户下次登录将强制改密，敏感手机号按权限脱敏展示。</p>
       </div>
       <el-button type="primary" :icon="Plus" @click="openCreate">新建用户</el-button>
     </div>
@@ -76,11 +76,16 @@
             <span v-if="!row.role_ids?.length" class="muted">未分配角色</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'" size="small" round>
-              {{ row.status === 'ACTIVE' ? '启用' : '停用' }}
-            </el-tag>
+            <el-switch
+              :model-value="row.status === 'ACTIVE'"
+              inline-prompt
+              active-text="启用"
+              inactive-text="停用"
+              :loading="statusLoading === row.id"
+              @change="(value) => toggleStatus(row, value)"
+            />
           </template>
         </el-table-column>
         <el-table-column label="最近登录" width="170">
@@ -123,7 +128,15 @@
         <el-row :gutter="12">
           <el-col :span="12">
             <el-form-item label="初始密码" prop="password">
-              <el-input v-model="form.password" type="password" show-password maxlength="64" />
+              <el-input v-model="form.password" type="password" show-password maxlength="64">
+                <template #append>
+                  <el-button @click="generatePassword">随机</el-button>
+                </template>
+              </el-input>
+              <div class="form-tip" style="display: flex; align-items: center; gap: 8px">
+                <span>至少 8 位，含大小写、数字、符号中的三类</span>
+                <el-button link type="primary" size="small" @click="copyPassword">复制</el-button>
+              </div>
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -281,6 +294,7 @@ const editForm = ref({})
 const resetVisible = ref(false)
 const resetTarget = ref({})
 const newPassword = ref('')
+const statusLoading = ref(null)
 
 const createRules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
@@ -300,6 +314,60 @@ function emptyForm() {
     role_ids: [],
     status: 'ACTIVE',
     first_login: true
+  }
+}
+
+// 初始密码生成：保证覆盖大写/小写/数字/符号四类，满足后端强度校验
+const PASSWORD_POOLS = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnpqrstuvwxyz', '23456789', '@#$%&*!?']
+
+function randomInt(max) {
+  const buffer = new Uint32Array(1)
+  window.crypto.getRandomValues(buffer)
+  return buffer[0] % max
+}
+
+function generatePassword() {
+  const chars = PASSWORD_POOLS.map((pool) => pool[randomInt(pool.length)])
+  const all = PASSWORD_POOLS.join('')
+  while (chars.length < 12) chars.push(all[randomInt(all.length)])
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = randomInt(i + 1)
+    const current = chars[i]
+    chars[i] = chars[j]
+    chars[j] = current
+  }
+  form.value.password = chars.join('')
+  ElMessage.success('已生成随机初始密码，请复制后告知用户')
+}
+
+async function copyPassword() {
+  const text = form.value.password
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const holder = document.createElement('textarea')
+      holder.value = text
+      document.body.appendChild(holder)
+      holder.select()
+      document.execCommand('copy')
+      document.body.removeChild(holder)
+    }
+    ElMessage.success('初始密码已复制')
+  } catch {
+    ElMessage.warning('浏览器不支持自动复制，请手动选择复制')
+  }
+}
+
+async function toggleStatus(row, active) {
+  statusLoading.value = row.id
+  try {
+    await iamApi.updateUser(row.id, { status: active ? 'ACTIVE' : 'DISABLED', version: row.version })
+    ElMessage.success(active ? '账号已启用' : '账号已停用')
+    await load()
+  } finally {
+    statusLoading.value = null
   }
 }
 

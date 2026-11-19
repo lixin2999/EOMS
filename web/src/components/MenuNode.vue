@@ -28,7 +28,7 @@ function resolveIcon(icon) {
     'Odometer', 'Stamp', 'Money', 'Calendar', 'Document', 'List', 'Connection',
     'Folder', 'OfficeBuilding', 'Tickets', 'Coin', 'DataLine', 'Wallet',
     'CreditCard', 'TrendCharts', 'PieChart', 'BarChart', 'Notebook', 'Setting',
-    'Menu', 'User', 'UserFilled', 'Files', 'Grid', 'Management'
+    'Menu', 'User', 'UserFilled', 'Files', 'Grid', 'Management', 'Lock'
   ]
   return known.includes(normalized) ? normalized : FALLBACK_ICONS[0]
 }

@@ -86,6 +86,7 @@ MENUS: list[tuple[str, str, str | None, str | None, str | None, str | None, int]
     ("workflow:definition", "流程配置", "menu:system", "/system/workflows", "system/Workflows", "Share", 94),
     ("system:audit", "审计日志", "menu:system", "/system/audit", "system/Audit", "Notebook", 95),
     ("system:config", "系统配置", "menu:system", "/system/config", "system/Config", "Tools", 96),
+    ("system:password", "修改密码", "menu:system", "/system/password", "system/Password", "Lock", 97),
 ]
 
 APIS: list[tuple[str, str]] = [

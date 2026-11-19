@@ -127,6 +127,12 @@ def update_dept(dept_id: int, payload: DeptIn, db: DbSession, user: CurrentUser,
     return ok(to_dict(item), "部门已更新")
 
 
+@router.delete("/depts/{dept_id}", summary="删除部门", dependencies=[Depends(require_permission("system:dept"))])
+def delete_dept(dept_id: int, db: DbSession, user: CurrentUser, ctx: Scope) -> dict:
+    admin.delete_dept(db, user, ctx, dept_id)
+    return ok(None, "部门已删除")
+
+
 @router.get("/audit-logs", summary="审计日志", dependencies=[Depends(require_permission("system:audit"))])
 def audit_logs(
     db: DbSession,

@@ -60,11 +60,12 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <div class="table-actions">
               <el-button link type="primary" @click="openCreate(row)">新增子部门</el-button>
               <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button link type="danger" @click="remove(row)">删除</el-button>
             </div>
           </template>
         </el-table-column>
@@ -125,7 +126,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { iamApi } from '@/api'
 import { useMetaStore } from '@/stores/meta'
@@ -228,6 +229,22 @@ async function save() {
   } finally {
     saving.value = false
   }
+}
+
+async function remove(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确认删除部门「${row.name}」吗？存在子部门或仍有用户归属时不允许删除。`,
+      '删除部门',
+      { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  await iamApi.deleteDept(row.id)
+  ElMessage.success('部门已删除')
+  await load()
+  await meta.refreshOptions()
 }
 
 onMounted(async () => {

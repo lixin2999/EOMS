@@ -173,6 +173,12 @@ export const routes = [
         name: 'config',
         component: () => import('@/views/system/Config.vue'),
         meta: { title: '系统参数', perm: 'system:config' }
+      },
+      {
+        path: 'system/password',
+        name: 'system-password',
+        component: () => import('@/views/system/Password.vue'),
+        meta: { title: '修改密码', perm: 'system:password' }
       }
     ]
   },

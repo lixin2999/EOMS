@@ -115,7 +115,8 @@ def update_user(db: Session, operator: User, ctx: ScopeContext, user_id: int, pa
     before = snapshot(user, ["real_name", "dept_id", "position", "email", "role_ids", "status"])
     if payload.get("real_name") is not None and str(payload["real_name"]).strip():
         user.real_name = str(payload["real_name"]).strip()[:64]
-    if payload.get("dept_id") is not None:
+    # 以下字段按「是否显式传参」判断：传 null 表示清空，未传表示不改。
+    if "dept_id" in payload:
         dept_id = payload["dept_id"]
         if dept_id:
             dept = db.get(Dept, int(dept_id))
@@ -124,11 +125,11 @@ def update_user(db: Session, operator: User, ctx: ScopeContext, user_id: int, pa
             user.dept_id = dept.id
         else:
             user.dept_id = None
-    if payload.get("position") is not None:
+    if "position" in payload:
         user.position = (payload["position"] or "")[:64] or None
-    if payload.get("email") is not None:
+    if "email" in payload:
         user.email = (payload["email"] or "")[:128] or None
-    if payload.get("phone") is not None:
+    if "phone" in payload:
         user.phone_enc = encrypt_text(str(payload["phone"] or "")) or None
     if payload.get("role_ids") is not None:
         user.role_ids = _check_roles(db, user.company_id, payload["role_ids"])
@@ -382,6 +383,23 @@ def save_dept(
     db.flush()
     write_audit(db, user=operator, action="CREATE_DEPT", target_type="DEPT", target_id=dept.id, after=snapshot(dept))
     return dept
+
+
+def delete_dept(db: Session, operator: User, ctx: ScopeContext, dept_id: int) -> None:
+    """删除部门。存在子部门或在职用户归属时拒绝，避免组织树断链与用户失联。"""
+    dept = db.get(Dept, dept_id)
+    if dept is None or dept.company_id != ctx.company_id:
+        raise NotFoundError("部门不存在")
+    children = int(db.execute(select(func.count(Dept.id)).where(Dept.parent_id == dept.id)).scalar_one())
+    if children:
+        raise BusinessRuleError(f"该部门下还有 {children} 个子部门，请先删除或迁移后再试")
+    members = int(db.execute(select(func.count(User.id)).where(User.dept_id == dept.id)).scalar_one())
+    if members:
+        raise BusinessRuleError(f"该部门下还有 {members} 名用户，请先调整用户归属后再试")
+    before = snapshot(dept)
+    db.delete(dept)
+    db.flush()
+    write_audit(db, user=operator, action="DELETE_DEPT", target_type="DEPT", target_id=dept_id, before=before)
 
 
 def _fix_children_path(db: Session, dept: Dept) -> None:
