@@ -38,15 +38,24 @@ def test_login_and_profile(client):
     response = client.post("/api/v1/auth/login", json=_login_payload("director"))
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data["access_token"] and data["refresh_token"]
+    # 令牌只写 HttpOnly Cookie，响应体不返回明文
+    assert "access_token" not in data and "refresh_token" not in data
+    assert data["csrf_token"]
     assert data["user"]["username"] == "director"
     assert "project:view" in data["user"]["permissions"]
+    cookies = response.headers.get_list("set-cookie")
+    assert any(cookie.startswith("eoms_at=") and "HttpOnly" in cookie for cookie in cookies)
+    assert any(cookie.startswith("eoms_rt=") and "HttpOnly" in cookie for cookie in cookies)
+    assert any(cookie.startswith("eoms_csrf=") and "HttpOnly" not in cookie for cookie in cookies)
 
-    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {data['access_token']}"})
+    me = client.get("/api/v1/auth/me")
     assert me.status_code == 200
     profile = me.json()["data"]
     assert profile["company_name"]
     assert profile["menus"], "登录用户应返回可见菜单树"
+    assert client.post(
+        "/api/v1/auth/logout", json={}, headers={"X-CSRF-Token": data["csrf_token"]}
+    ).status_code == 200
 
 
 def test_login_rejects_invalid_captcha(client):
@@ -77,13 +86,17 @@ def test_login_wrong_password_and_lock(client):
 
 
 def test_refresh_token_rotates(client):
-    login = client.post("/api/v1/auth/login", json=_login_payload("pm")).json()["data"]
-    refreshed = client.post("/api/v1/auth/refresh", json={"refresh_token": login["refresh_token"]})
+    client.post("/api/v1/auth/login", json=_login_payload("pm"))
+    refreshed = client.post("/api/v1/auth/refresh", json={})
     assert refreshed.status_code == 200, refreshed.text
-    new_access = refreshed.json()["data"]["access_token"]
-    assert new_access != login["access_token"]
-    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {new_access}"})
+    data = refreshed.json()["data"]
+    assert data["csrf_token"]
+    me = client.get("/api/v1/auth/me")
     assert me.status_code == 200
+    assert me.json()["data"]["username"] == "pm"
+    assert client.post(
+        "/api/v1/auth/logout", json={}, headers={"X-CSRF-Token": data["csrf_token"]}
+    ).status_code == 200
 
 
 def test_logout_blacklists_access_token(client, token_for):

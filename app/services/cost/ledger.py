@@ -4,6 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import BusinessRuleError, NotFoundError
@@ -41,17 +42,92 @@ def record_cost(
     applicant_id: int | None = None,
     source_no: str | None = None,
     cash_date: date | None = None,
-) -> CostRecord:
+    allow_pending: bool = False,
+) -> CostRecord | None:
+    """写入成本记录（按 ``record_key`` 幂等）。
+
+    ``allow_pending=True`` 时，若目标期间已关账则把入账请求暂存到
+    ``fin_pending_cost``，由反关账或定时任务补记，避免审批因关账而失败。
+    返回 ``None`` 表示已暂存、尚未入账。
+    """
+    record, _ = record_cost_checked(
+        db,
+        company_id=company_id,
+        dept_id=dept_id,
+        project_id=project_id,
+        biz_type=biz_type,
+        biz_id=biz_id,
+        account_code=account_code,
+        amount=amount,
+        occur_date=occur_date,
+        currency=currency,
+        vendor_id=vendor_id,
+        contract_id=contract_id,
+        applicant_id=applicant_id,
+        source_no=source_no,
+        cash_date=cash_date,
+        allow_pending=allow_pending,
+    )
+    return record
+
+
+def record_cost_checked(
+    db: Session,
+    *,
+    company_id: int,
+    dept_id: int | None,
+    project_id: int | None,
+    biz_type: str,
+    biz_id: int,
+    account_code: str,
+    amount: Decimal,
+    occur_date: date,
+    currency: str = "CNY",
+    vendor_id: int | None = None,
+    contract_id: int | None = None,
+    applicant_id: int | None = None,
+    source_no: str | None = None,
+    cash_date: date | None = None,
+    allow_pending: bool = False,
+) -> tuple[CostRecord | None, bool]:
+    """返回 ``(成本记录, 是否本次新建)``，供调用方判断是否需要执行副作用。"""
     amount = Decimal(str(amount))
     if amount == 0:
         raise BusinessRuleError("入账金额不能为 0")
-    period = ensure_period_open(db, company_id, occur_date)
     record_key = f"{biz_type}:{biz_id}:{account_code}"
     existing = db.execute(
         select(CostRecord).where(CostRecord.record_key == record_key)
     ).scalar_one_or_none()
     if existing is not None:
-        return existing
+        return existing, False
+    try:
+        period = ensure_period_open(db, company_id, occur_date)
+    except BusinessRuleError as exc:
+        if not allow_pending:
+            raise
+        from app.services.cost.pending import queue_pending_cost
+
+        queue_pending_cost(
+            db,
+            record_key=record_key,
+            company_id=company_id,
+            dept_id=dept_id,
+            project_id=project_id,
+            biz_type=biz_type,
+            biz_id=biz_id,
+            account_code=account_code,
+            amount=amount,
+            currency=currency,
+            occur_date=occur_date,
+            period=period_of(occur_date),
+            vendor_id=vendor_id,
+            contract_id=contract_id,
+            applicant_id=applicant_id,
+            source_no=source_no,
+            cash_date=cash_date,
+            reason=str(exc.msg),
+        )
+        return None, False
     record = CostRecord(
         record_key=record_key,
         company_id=company_id,
@@ -71,9 +147,19 @@ def record_cost(
         status="ACTIVE",
         cash_date=cash_date,
     )
-    db.add(record)
-    db.flush()
-    return record
+    try:
+        with db.begin_nested():
+            db.add(record)
+            db.flush()
+    except IntegrityError:
+        # 并发写入同一 record_key：回滚保存点后返回已有记录，保证幂等语义。
+        existing = db.execute(
+            select(CostRecord).where(CostRecord.record_key == record_key)
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing, False
+    return record, True
 
 
 def reverse_cost(db: Session, record_id: int, user: User, reason: str) -> CostRecord:

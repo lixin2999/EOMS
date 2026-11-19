@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.cache import LockBusyError, cache
@@ -58,41 +59,47 @@ def save_definition(
     remark: str | None = None,
 ) -> WorkflowDefinition:
     validate_definition(nodes_json)
-    max_version = (
-        db.execute(
-            select(func.max(WorkflowDefinition.version)).where(
-                WorkflowDefinition.company_id == user.company_id, WorkflowDefinition.code == code
-            )
-        ).scalar_one()
-        or 0
-    )
-    definition = WorkflowDefinition(
-        company_id=user.company_id,
-        code=code,
-        name=name,
-        version=int(max_version) + 1,
-        nodes_json=nodes_json,
-        enabled=enabled,
-        remark=remark,
-    )
-    if enabled:
-        db.execute(
-            select(WorkflowDefinition).where(
-                WorkflowDefinition.company_id == user.company_id, WorkflowDefinition.code == code
-            )
+    definition: WorkflowDefinition | None = None
+    for attempt in range(3):
+        max_version = (
+            db.execute(
+                select(func.max(WorkflowDefinition.version)).where(
+                    WorkflowDefinition.company_id == user.company_id, WorkflowDefinition.code == code
+                )
+            ).scalar_one()
+            or 0
         )
-        # 同 code 仅保留一个启用版本
-        old = db.execute(
-            select(WorkflowDefinition).where(
-                WorkflowDefinition.company_id == user.company_id,
-                WorkflowDefinition.code == code,
-                WorkflowDefinition.enabled.is_(True),
-            )
-        ).scalars()
-        for item in old:
-            item.enabled = False
-    db.add(definition)
-    db.flush()
+        candidate = WorkflowDefinition(
+            company_id=user.company_id,
+            code=code,
+            name=name,
+            version=int(max_version) + 1,
+            nodes_json=nodes_json,
+            enabled=enabled,
+            remark=remark,
+        )
+        try:
+            with db.begin_nested():
+                if enabled:
+                    # 同 code 仅保留一个启用版本
+                    old = db.execute(
+                        select(WorkflowDefinition).where(
+                            WorkflowDefinition.company_id == user.company_id,
+                            WorkflowDefinition.code == code,
+                            WorkflowDefinition.enabled.is_(True),
+                        )
+                    ).scalars()
+                    for item in old:
+                        item.enabled = False
+                db.add(candidate)
+                db.flush()
+            definition = candidate
+            break
+        except IntegrityError:
+            # 并发保存相同 version：回滚保存点后重新取号重试
+            if attempt >= 2:
+                raise ConflictError("流程定义正在被其他操作修改，请稍后重试") from None
+    assert definition is not None
     write_audit(
         db,
         user=user,
@@ -119,6 +126,18 @@ def start_workflow(
     context: dict[str, Any],
     version: int = 1,
 ) -> WorkflowInstance:
+    running = db.execute(
+        select(WorkflowInstance.id)
+        .where(
+            WorkflowInstance.company_id == company_id,
+            WorkflowInstance.biz_type == biz_type,
+            WorkflowInstance.biz_id == biz_id,
+            WorkflowInstance.status == WorkflowStatus.RUNNING.value,
+        )
+        .limit(1)
+    ).first()
+    if running is not None:
+        raise ConflictError("该单据已有进行中的审批流程，请勿重复提交")
     definition = get_definition(db, company_id, def_code)
     instance = WorkflowInstance(
         company_id=company_id,
@@ -353,6 +372,51 @@ def _skip_task(
     db.flush()
 
 
+def _create_cc(db: Session, instance: WorkflowInstance, node: dict[str, Any]) -> None:
+    """处理 CC 节点：解析收件人 → 写 wf_cc + 站内通知（不生成待办任务）。"""
+    users = _resolve_assignees(db, instance, node.get("assignee") or {})
+    if not users:
+        return
+    targets = {user.id for user in users}
+    existing = set(
+        db.execute(
+            select(WorkflowCc.user_id).where(
+                WorkflowCc.instance_id == instance.id, WorkflowCc.user_id.in_(targets)
+            )
+        ).scalars()
+    )
+    fresh = [user for user in users if user.id not in existing]
+    for user in fresh:
+        db.add(WorkflowCc(company_id=instance.company_id, instance_id=instance.id, user_id=user.id))
+    db.flush()
+    if fresh:
+        notify_with_email(
+            db,
+            company_id=instance.company_id,
+            user_ids=[user.id for user in fresh],
+            title=f"抄送：{instance.title}",
+            content=(
+                f"{instance.context_json.get('initiator_name', '')} 发起的审批已抄送给您"
+                f"（节点「{node.get('name') or node.get('code')}」）。"
+            ),
+            type="APPROVAL",
+            biz_type=instance.biz_type,
+            biz_id=instance.biz_id,
+            link=f"/workflow/instances/{instance.id}",
+            email=False,
+        )
+    _add_record(
+        db,
+        instance,
+        node_code=str(node.get("code")),
+        node_name=node.get("name"),
+        operator=None,
+        action=WorkflowAction.CC.value,
+        comment="自动抄送",
+        operator_name="系统",
+    )
+
+
 def _advance(db: Session, instance: WorkflowInstance, definition: WorkflowDefinition, from_code: str) -> None:
     nodes = definition.nodes_json.get("nodes", [])
     codes = [str(node.get("code")) for node in nodes]
@@ -367,6 +431,9 @@ def _advance(db: Session, instance: WorkflowInstance, definition: WorkflowDefini
         if node_type == "END":
             _finish_approved(db, instance)
             return
+        if node_type == "CC":
+            _create_cc(db, instance, node)
+            continue
         if node_type != "APPROVAL":
             continue
         if not _condition_ok(node.get("condition"), instance.context_json):
@@ -525,32 +592,34 @@ def act(
     if action not in {item.value for item in WorkflowAction}:
         raise BusinessRuleError("不支持的审批动作")
     try:
-        with cache.lock(f"wf:{instance_id}"):
-            instance = _get_instance_for_update(db, instance_id, user.company_id)
-            if instance.status != WorkflowStatus.RUNNING.value:
-                raise ConflictError("流程已结束，不能重复操作")
-            definition = db.get(WorkflowDefinition, instance.def_id)
-            if definition is None:
-                raise BusinessRuleError("流程定义不存在")
+        # 锁覆盖整个事务：释放推迟到 db/session.py 在 commit/rollback 之后执行，
+        # 避免「锁已释放但事务未提交」的窗口导致并发重复推进。
+        cache.hold(db, f"wf:{instance_id}")
+        instance = _get_instance_for_update(db, instance_id, user.company_id)
+        if instance.status != WorkflowStatus.RUNNING.value:
+            raise ConflictError("流程已结束，不能重复操作")
+        definition = db.get(WorkflowDefinition, instance.def_id)
+        if definition is None:
+            raise BusinessRuleError("流程定义不存在")
 
-            if action == WorkflowAction.WITHDRAW.value:
-                _withdraw(db, instance, user)
-            elif action == WorkflowAction.URGE.value:
-                _urge(db, instance, user)
-            elif action == WorkflowAction.CC.value:
-                _cc(db, instance, user, cc_user_ids or [])
-            else:
-                task = _get_task(db, instance, user, task_id)
-                if action == WorkflowAction.APPROVE.value:
-                    _approve(db, instance, definition, task, user, comment, attachments)
-                elif action == WorkflowAction.REJECT.value:
-                    _reject(db, instance, definition, task, user, comment, back_to)
-                elif action == WorkflowAction.TRANSFER.value:
-                    _transfer(db, instance, task, user, target_user_id, comment)
-                elif action == WorkflowAction.ADD_SIGN.value:
-                    _add_sign(db, instance, task, user, target_user_ids or [], mode, comment)
-            db.flush()
-            return instance
+        if action == WorkflowAction.WITHDRAW.value:
+            _withdraw(db, instance, user)
+        elif action == WorkflowAction.URGE.value:
+            _urge(db, instance, user)
+        elif action == WorkflowAction.CC.value:
+            _cc(db, instance, user, cc_user_ids or [])
+        else:
+            task = _get_task(db, instance, user, task_id)
+            if action == WorkflowAction.APPROVE.value:
+                _approve(db, instance, definition, task, user, comment, attachments)
+            elif action == WorkflowAction.REJECT.value:
+                _reject(db, instance, definition, task, user, comment, back_to)
+            elif action == WorkflowAction.TRANSFER.value:
+                _transfer(db, instance, task, user, target_user_id, comment)
+            elif action == WorkflowAction.ADD_SIGN.value:
+                _add_sign(db, instance, task, user, target_user_ids or [], mode, comment)
+        db.flush()
+        return instance
     except LockBusyError:
         raise ConflictError("该流程正在被处理，请稍后刷新重试") from None
 

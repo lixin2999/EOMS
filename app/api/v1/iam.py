@@ -33,9 +33,10 @@ def list_users(
     status: str | None = None,
 ) -> dict:
     result = admin.list_users(db, ctx, params, keyword=keyword, dept_id=dept_id, status=status)
+    dept_names = admin.dept_name_map(db, [user.dept_id or 0 for user in result["items"]])
     return ok(
         {
-            "items": [admin.serialize_user(db, user) for user in result["items"]],
+            "items": [admin.serialize_user(db, user, dept_names) for user in result["items"]],
             "total": result["total"],
             "page": result["page"],
             "page_size": result["page_size"],

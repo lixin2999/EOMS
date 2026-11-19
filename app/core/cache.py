@@ -8,13 +8,17 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import settings
 from app.core.logging import get_logger
 
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
 logger = get_logger("eoms.cache")
 
+_RELEASE_LOCK_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 
 class LockBusyError(Exception):
     """分布式锁已被占用。"""
@@ -40,7 +44,19 @@ class MemoryBackend:
         for key in expired:
             self._data.pop(key, None)
         while len(self._data) > self._MAX_KEYS:
-            self._data.popitem(last=False)
+            # 锁与会话类键承担并发控制语义，淘汰会导致互斥失效，优先清理普通缓存。
+            victim = next(
+                (
+                    key
+                    for key in self._data
+                    if ":lock:" not in key and ":sess:" not in key and ":bucket:" not in key
+                ),
+                None,
+            )
+            if victim is None:
+                self._data.popitem(last=False)
+            else:
+                self._data.pop(victim, None)
 
     def get(self, key: str) -> str | None:
         with self._lock:
@@ -217,6 +233,7 @@ class Cache:
         else:
             self._backend = MemoryBackend()
         self._mem_lock = threading.Lock()
+        self._fallback = MemoryBackend()
         logger.info("缓存模式: %s", self._mode)
 
     @property
@@ -319,42 +336,68 @@ class Cache:
                 return bool(int(allowed)), int(remaining)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Redis 限流失败，降级内存限流: %s", exc)
+        # 降级时使用独立内存后端，避免把 "tokens:ts" 写入 Redis 的 Hash 结构造成数据错乱。
         with self._mem_lock:
-            data = self._backend.get(key) if isinstance(self._backend, MemoryBackend) else None
+            data = self._fallback.get(key)
             tokens, last = (capacity, now) if not data else (float(data.split(":")[0]), float(data.split(":")[1]))
             tokens = min(capacity, tokens + max(0.0, now - last) * rate)
             allowed = tokens >= cost
             if allowed:
                 tokens -= cost
-            self._backend.set(key, f"{tokens}:{now}", int(capacity / rate) + 60)
+            self._fallback.set(key, f"{tokens}:{now}", int(capacity / rate) + 60)
             return allowed, int(tokens)
 
     # ---------------- 分布式锁 ----------------
+    def _release_lock(self, name: str, token: str) -> bool:
+        """按 token 安全释放锁，避免误删其他持有者的锁。"""
+        key = self._key(f"lock:{name}")
+        if isinstance(self._backend, RedisBackend):
+            try:
+                return bool(self._backend.client.eval(_RELEASE_LOCK_LUA, 1, key, token))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("释放分布式锁失败 %s: %s", name, exc)
+                return False
+        if self._backend.get(key) == token:
+            self._backend.delete(key)
+            return True
+        return False
+
     @contextmanager
     def lock(self, name: str, ttl: int | None = None) -> Iterator[None]:
+        """代码块级锁：仅用于不需要跟随事务提交的场景。"""
         ttl = ttl or settings.workflow_lock_seconds
         token = uuid.uuid4().hex
-        key = self._key(f"lock:{name}")
-        acquired = self.set_nx(f"lock:{name}", token, ttl)
-        if not acquired:
+        if not self.set_nx(f"lock:{name}", token, ttl):
             raise LockBusyError(f"操作正在处理中：{name}")
         try:
             yield
         finally:
-            if isinstance(self._backend, RedisBackend):
-                try:
-                    self._backend.client.eval(
-                        "if redis.call('get', KEYS[1]) == ARGV[1] then "
-                        "return redis.call('del', KEYS[1]) else return 0 end",
-                        1,
-                        key,
-                        token,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("释放分布式锁失败 %s: %s", name, exc)
-            else:
-                if self._backend.get(key) == token:
-                    self._backend.delete(key)
+            self._release_lock(name, token)
+
+    @property
+    def txn_lock_ttl(self) -> int:
+        """事务级锁的 TTL：需覆盖语句超时并留出业务处理余量。"""
+        return max(settings.workflow_lock_seconds, settings.db_statement_timeout_ms // 1000 + 30)
+
+    def hold(self, db: Session, name: str, ttl: int | None = None) -> None:
+        """获取锁并登记到会话，随事务结束（commit/rollback）释放。
+
+        关键点：锁必须先于事务提交释放会造成「提交前窗口」，其他请求可读到旧状态
+        并重复推进流程；因此把释放动作交给 ``db/session.py`` 在事务收尾时执行。
+        """
+        ttl = ttl or self.txn_lock_ttl
+        token = uuid.uuid4().hex
+        if not self.set_nx(f"lock:{name}", token, ttl):
+            raise LockBusyError(f"操作正在处理中：{name}")
+        db.info.setdefault("held_locks", []).append((name, token))
+
+    def release_held(self, db: Session) -> None:
+        """释放会话登记的全部事务级锁（幂等，重复调用无副作用）。"""
+        held = db.info.pop("held_locks", None)
+        if not held:
+            return
+        for name, token in held:
+            self._release_lock(name, token)
 
     # ---------------- 健康检查 ----------------
     def health(self) -> dict[str, Any]:

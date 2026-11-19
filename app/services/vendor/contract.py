@@ -279,13 +279,16 @@ def change_status(
     return contract
 
 
-def list_vendor_projects(db: Session, ctx: ScopeContext, vendor_id: int) -> list[VendorProject]:
+def list_vendor_projects(db: Session, ctx: ScopeContext, vendor_id: int, limit: int = 200) -> list[VendorProject]:
     vendor = db.get(Vendor, vendor_id)
     if vendor is None or vendor.company_id != ctx.company_id:
         raise NotFoundError("供应商不存在")
     return list(
         db.execute(
-            select(VendorProject).where(VendorProject.vendor_id == vendor_id).order_by(VendorProject.id.desc())
+            select(VendorProject)
+            .where(VendorProject.vendor_id == vendor_id)
+            .order_by(VendorProject.id.desc())
+            .limit(limit)
         )
         .scalars()
         .all()
@@ -346,6 +349,16 @@ def contract_risks(db: Session, ctx: ScopeContext, warning_days: int = 45) -> li
         .all()
     )
     risks: list[dict] = []
+    contract_ids = [contract.id for contract in contracts]
+    # 一次性聚合已付金额，避免按合同逐条查询（N+1）
+    paid_map: dict[int, Decimal] = {}
+    if contract_ids:
+        rows = db.execute(
+            select(VendorProject.contract_id, func.coalesce(func.sum(VendorProject.paid_amount), 0))
+            .where(VendorProject.contract_id.in_(contract_ids))
+            .group_by(VendorProject.contract_id)
+        ).all()
+        paid_map = {int(contract_id): Decimal(str(total or 0)) for contract_id, total in rows}
     for contract in contracts:
         if contract.end_date and contract.end_date <= deadline:
             days = (contract.end_date - today()).days
@@ -360,12 +373,7 @@ def contract_risks(db: Session, ctx: ScopeContext, warning_days: int = 45) -> li
                     "days": days,
                 }
             )
-        paid = db.execute(
-            select(func.coalesce(func.sum(VendorProject.paid_amount), 0)).where(
-                VendorProject.contract_id == contract.id
-            )
-        ).scalar_one()
-        paid = Decimal(str(paid or 0))
+        paid = paid_map.get(contract.id, Decimal("0"))
         if contract.amount > 0 and paid > contract.amount:
             risks.append(
                 {

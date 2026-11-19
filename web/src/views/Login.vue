@@ -76,7 +76,7 @@
           </el-button>
         </el-form>
 
-        <div class="login-tip">
+        <div v-if="isDev" class="login-tip">
           演示账号：<span class="mono">admin</span>（管理员，首次登录需改密）、
           <span class="mono">director</span> / <span class="mono">manager</span> / <span class="mono">leader</span> /
           <span class="mono">pm</span> / <span class="mono">finance</span> / <span class="mono">purchase</span> /
@@ -101,7 +101,8 @@ const route = useRoute()
 const auth = useAuthStore()
 const formRef = ref()
 const captcha = reactive({ id: '', image: '' })
-const form = reactive({ username: 'director', password: 'Eoms@2026', captcha_code: '' })
+const isDev = import.meta.env.DEV
+const form = reactive({ username: '', password: '', captcha_code: '' })
 
 const rules = {
   username: [{ required: true, message: '请输入账号', trigger: 'blur' }],

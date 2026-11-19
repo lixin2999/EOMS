@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import Select, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import BusinessRuleError, NotFoundError
@@ -18,7 +19,7 @@ from app.models.vendor import Contract, Vendor, VendorProject
 from app.services.approval.expense import get_expense, mark_paid
 from app.services.common import company_code, users_by_role
 from app.services.cost.budget import check_budget_alert
-from app.services.cost.ledger import ensure_period_open, record_cost
+from app.services.cost.ledger import ensure_period_open, record_cost_checked
 from app.services.iam.audit import snapshot, write_audit
 from app.services.iam.notification import notify_with_email
 from app.services.project.project import get_project
@@ -64,6 +65,16 @@ def list_payments(
 
 def get_payment(db: Session, ctx: ScopeContext, payment_id: int) -> Payment:
     item = db.execute(_base_query(ctx).where(Payment.id == payment_id)).scalar_one_or_none()
+    if item is None:
+        raise NotFoundError("付款单不存在或无权访问")
+    return item
+
+
+def get_payment_for_update(db: Session, ctx: ScopeContext, payment_id: int) -> Payment:
+    """执行付款/取消时以行锁读取，PostgreSQL 下阻止并发重复入账。"""
+    item = db.execute(
+        _base_query(ctx).where(Payment.id == payment_id).with_for_update()
+    ).scalar_one_or_none()
     if item is None:
         raise NotFoundError("付款单不存在或无权访问")
     return item
@@ -145,7 +156,12 @@ def create_payment(db: Session, user: User, ctx: ScopeContext, payload: dict[str
         installments_json=payload.get("installments") or [],
     )
     db.add(payment)
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.flush()
+    except IntegrityError:
+        # 部分唯一索引兜底：同一报销单并发创建付款单
+        raise BusinessRuleError("该报销单已存在付款单") from None
     write_audit(
         db, user=user, action="CREATE_PAYMENT", target_type="PAYMENT", target_id=payment.id, after=snapshot(payment)
     )
@@ -153,7 +169,7 @@ def create_payment(db: Session, user: User, ctx: ScopeContext, payload: dict[str
 
 
 def pay_payment(db: Session, user: User, ctx: ScopeContext, payment_id: int, pay_date=None) -> Payment:
-    payment = get_payment(db, ctx, payment_id)
+    payment = get_payment_for_update(db, ctx, payment_id)
     if payment.status != PaymentStatus.PENDING.value:
         raise BusinessRuleError("仅待付款状态可执行付款")
     actual_date = to_date(pay_date) or today()
@@ -169,7 +185,7 @@ def pay_payment(db: Session, user: User, ctx: ScopeContext, payment_id: int, pay
             raise BusinessRuleError("关联报销单不存在")
         mark_paid(db, expense, actual_date, user)
     else:
-        record_cost(
+        _, created = record_cost_checked(
             db,
             company_id=payment.company_id,
             dept_id=payment.dept_id,
@@ -186,10 +202,12 @@ def pay_payment(db: Session, user: User, ctx: ScopeContext, payment_id: int, pay
             source_no=payment.no,
             cash_date=actual_date,
         )
-        check_budget_alert(db, payment.project_id, payment.account_code or "5401", actual_date.year)
-        if payment.contract_id:
-            _sync_vendor_project(db, payment)
-            _check_contract_overrun(db, payment)
+        # 成本记录已存在（重试/并发）时不重复执行预算与合同副作用
+        if created:
+            check_budget_alert(db, payment.project_id, payment.account_code or "5401", actual_date.year)
+            if payment.contract_id:
+                _sync_vendor_project(db, payment)
+                _check_contract_overrun(db, payment)
     write_audit(db, user=user, action="PAY_PAYMENT", target_type="PAYMENT", target_id=payment.id)
     notify_with_email(
         db,
@@ -207,13 +225,28 @@ def pay_payment(db: Session, user: User, ctx: ScopeContext, payment_id: int, pay
 
 
 def _sync_vendor_project(db: Session, payment: Payment) -> None:
+    """按已付款单据聚合重算合作项目已付金额，避免「读-改-写累加」在并发下失真。"""
     if not payment.vendor_id or not payment.project_id:
         return
+    filters = [
+        Payment.vendor_id == payment.vendor_id,
+        Payment.project_id == payment.project_id,
+        Payment.status == PaymentStatus.PAID.value,
+    ]
+    if payment.contract_id is None:
+        filters.append(Payment.contract_id.is_(None))
+    else:
+        filters.append(Payment.contract_id == payment.contract_id)
+    paid = Decimal(
+        str(db.execute(select(func.coalesce(func.sum(Payment.amount), 0)).where(*filters)).scalar_one())
+    )
     row = db.execute(
         select(VendorProject).where(
             VendorProject.vendor_id == payment.vendor_id,
             VendorProject.project_id == payment.project_id,
-            VendorProject.contract_id == payment.contract_id,
+            VendorProject.contract_id.is_(None)
+            if payment.contract_id is None
+            else VendorProject.contract_id == payment.contract_id,
         )
     ).scalar_one_or_none()
     if row is None:
@@ -225,13 +258,14 @@ def _sync_vendor_project(db: Session, payment: Payment) -> None:
             contract_id=payment.contract_id,
             role="供应商",
             contract_amount=Decimal(str(contract.amount)) if contract else Decimal("0.00"),
-            paid_amount=Decimal("0.00"),
+            paid_amount=paid,
             settled_amount=Decimal("0.00"),
             score=Decimal("0.00"),
         )
         db.add(row)
         db.flush()
-    row.paid_amount = Decimal(str(row.paid_amount)) + Decimal(str(payment.amount))
+        return
+    row.paid_amount = paid
     db.flush()
 
 
@@ -266,7 +300,7 @@ def _check_contract_overrun(db: Session, payment: Payment) -> None:
 
 
 def cancel_payment(db: Session, user: User, ctx: ScopeContext, payment_id: int) -> Payment:
-    payment = get_payment(db, ctx, payment_id)
+    payment = get_payment_for_update(db, ctx, payment_id)
     if payment.status != PaymentStatus.PENDING.value:
         raise BusinessRuleError("仅待付款状态可取消")
     payment.status = PaymentStatus.CANCELED.value

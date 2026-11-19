@@ -81,4 +81,8 @@ def reopen_period(db: Session, user: User, period: str, reason: str) -> Period:
         target_id=row.id,
         after={"period": period, "reason": reason},
     )
+    # 反关账后立即补记该期间的待归集成本，避免财务再手工补录。
+    from app.services.cost.pending import post_pending_costs
+
+    post_pending_costs(db, company_id=user.company_id, limit=500)
     return row

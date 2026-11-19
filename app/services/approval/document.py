@@ -12,7 +12,7 @@ from app.models.approval import Document
 from app.models.enums import DocumentCategory, DocumentStatus, SecretLevel
 from app.models.iam import User
 from app.models.workflow import WorkflowInstance
-from app.services.common import company_code, ensure_files
+from app.services.common import claim_version, company_code, ensure_files
 from app.services.iam.audit import snapshot, write_audit
 from app.utils.datetime import now, to_date
 from app.utils.numbering import next_no
@@ -24,9 +24,16 @@ FILE_REQUIRED_CATEGORIES = {DocumentCategory.SEAL.value, DocumentCategory.CONTRA
 
 
 def _base_query(ctx: ScopeContext) -> Select:
+    """数据域过滤 + 密级可见性：非超管仅能看非密级文件或自己创建的密件。"""
     stmt = select(Document)
     condition = scope_condition(ctx, Document)
-    return stmt.where(condition) if condition is not None else stmt
+    if condition is not None:
+        stmt = stmt.where(condition)
+    if not ctx.is_super:
+        stmt = stmt.where(
+            or_(Document.secret_level != SecretLevel.SECRET.value, Document.creator_id == ctx.user_id)
+        )
+    return stmt
 
 
 def list_documents(
@@ -148,10 +155,15 @@ def submit_document(db: Session, user: User, ctx: ScopeContext, doc_id: int) -> 
         raise BusinessRuleError("用印/合同类文件必须上传附件")
     if doc.file_id:
         ensure_files(db, [doc.file_id], user.company_id)
+    claim_version(
+        db,
+        Document,
+        doc,
+        allowed_status={DocumentStatus.DRAFT.value, DocumentStatus.REJECTED.value},
+    )
     doc.status = DocumentStatus.RUNNING.value
     doc.submitted_at = now()
     doc.workflow_version = int(doc.workflow_version or 0) + 1
-    doc.version = int(doc.version or 1) + 1
     db.flush()
     instance = engine.start_workflow(
         db,

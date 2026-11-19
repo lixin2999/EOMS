@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.response import ok
 from app.api.serializers import to_dict
-from app.core.deps import DbSession, Scope, require_permission
+from app.core.deps import CurrentUser, DbSession, Scope, require_permission
+from app.services.iam.audit import write_audit
 from app.services.report import export as export_service
 from app.services.report import service as report_service
 
@@ -58,6 +59,7 @@ def export_report(
     report_code: str,
     db: DbSession,
     ctx: Scope,
+    user: CurrentUser,
     fmt: str = Query(default="excel", alias="format", pattern="^(excel|pdf)$"),
     start: str | None = None,
     end: str | None = None,
@@ -75,6 +77,24 @@ def export_report(
         group_by=group_by,
         project_id=project_id,
         year=year,
+    )
+    # 导出属于数据外发，必须留下审计痕迹（谁、何时、导出了什么口径的数据）。
+    write_audit(
+        db,
+        user=user,
+        action="EXPORT_REPORT",
+        target_type="REPORT",
+        target_id=0,
+        after={
+            "code": code,
+            "format": fmt,
+            "start": start,
+            "end": end,
+            "group_by": group_by,
+            "project_id": project_id,
+            "year": year,
+            "rows": len(payload.get("items") or payload.get("monthly") or []),
+        },
     )
     if fmt == "pdf":
         content = export_service.build_pdf(code, payload)

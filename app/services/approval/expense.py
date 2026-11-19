@@ -15,7 +15,7 @@ from app.models.enums import ExpenseStatus, ExpenseType
 from app.models.iam import User
 from app.models.project import Project
 from app.models.workflow import WorkflowInstance
-from app.services.common import company_code, ensure_choice, ensure_files, users_by_role
+from app.services.common import claim_version, company_code, ensure_choice, ensure_files, users_by_role
 from app.services.cost.accounts import CATEGORY_ACCOUNT, category_amounts
 from app.services.cost.budget import check_budget_alert
 from app.services.cost.ledger import ensure_period_open, record_cost, update_cash_date
@@ -233,10 +233,15 @@ def submit_expense(db: Session, user: User, ctx: ScopeContext, expense_id: int) 
     for item in expense.items_json:
         ensure_period_open(db, user.company_id, to_date(item.get("occur_date")) or today())
 
+    claim_version(
+        db,
+        Expense,
+        expense,
+        allowed_status={ExpenseStatus.DRAFT.value, ExpenseStatus.REJECTED.value},
+    )
     expense.status = ExpenseStatus.RUNNING.value
     expense.submitted_at = now()
     expense.workflow_version = int(expense.workflow_version or 0) + 1
-    expense.version = int(expense.version or 1) + 1
     db.flush()
     instance = engine.start_workflow(
         db,
@@ -352,7 +357,8 @@ def on_approved(db: Session, instance: WorkflowInstance) -> None:
         default=today(),
     )
     for account_code, amount in category_amounts(expense.items_json or []).items():
-        record_cost(
+        # 期间已关账时把入账请求暂存，审批动作照常完成，开账后由任务补记。
+        record = record_cost(
             db,
             company_id=expense.company_id,
             dept_id=expense.dept_id,
@@ -365,8 +371,10 @@ def on_approved(db: Session, instance: WorkflowInstance) -> None:
             currency=expense.currency,
             applicant_id=expense.applicant_id,
             source_no=expense.no,
+            allow_pending=True,
         )
-        check_budget_alert(db, expense.project_id, account_code, occur.year)
+        if record is not None:
+            check_budget_alert(db, expense.project_id, account_code, occur.year)
     finance_ids = [item.id for item in users_by_role(db, expense.company_id, "FINANCE")]
     notify_with_email(
         db,

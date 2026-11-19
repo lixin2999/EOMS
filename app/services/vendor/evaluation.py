@@ -43,7 +43,7 @@ def get_evaluation(db: Session, ctx: ScopeContext, evaluation_id: int) -> Evalua
 
 
 def list_evaluations(
-    db: Session, ctx: ScopeContext, vendor_id: int, *, year: int | None = None
+    db: Session, ctx: ScopeContext, vendor_id: int, *, year: int | None = None, limit: int = 200
 ) -> list[Evaluation]:
     vendor = db.get(Vendor, vendor_id)
     if vendor is None or vendor.company_id != ctx.company_id:
@@ -53,7 +53,11 @@ def list_evaluations(
         stmt = stmt.where(
             Evaluation.eval_date >= date(year, 1, 1), Evaluation.eval_date <= date(year, 12, 31)
         )
-    return list(db.execute(stmt.order_by(Evaluation.eval_date.desc(), Evaluation.id.desc())).scalars().all())
+    return list(
+        db.execute(stmt.order_by(Evaluation.eval_date.desc(), Evaluation.id.desc()).limit(limit))
+        .scalars()
+        .all()
+    )
 
 
 def create_evaluation(

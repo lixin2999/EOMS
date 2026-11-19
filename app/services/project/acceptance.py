@@ -23,10 +23,15 @@ from app.workflow import engine
 RESULTS = {item.value for item in AcceptanceResult}
 
 
-def list_acceptances(db: Session, ctx: ScopeContext, project_id: int) -> list[Acceptance]:
+def list_acceptances(db: Session, ctx: ScopeContext, project_id: int, limit: int = 200) -> list[Acceptance]:
     get_project(db, ctx, project_id)
     return list(
-        db.execute(select(Acceptance).where(Acceptance.project_id == project_id).order_by(Acceptance.id.desc()))
+        db.execute(
+            select(Acceptance)
+            .where(Acceptance.project_id == project_id)
+            .order_by(Acceptance.id.desc())
+            .limit(limit)
+        )
         .scalars()
         .all()
     )

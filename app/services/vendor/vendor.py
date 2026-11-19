@@ -19,7 +19,7 @@ from app.models.vendor import (
     VendorLicense,
 )
 from app.models.workflow import WorkflowInstance
-from app.services.common import company_code, ensure_files
+from app.services.common import claim_version, company_code, ensure_files
 from app.services.iam.audit import snapshot, write_audit
 from app.services.iam.notification import notify_with_email
 from app.utils.datetime import to_date, today
@@ -152,6 +152,7 @@ def submit_vendor(db: Session, user: User, ctx: ScopeContext, vendor_id: int) ->
         raise BusinessRuleError("仅待审核供应商可提交准入")
     if not db.execute(select(VendorLicense.id).where(VendorLicense.vendor_id == vendor.id).limit(1)).first():
         raise BusinessRuleError("请先录入营业执照等资质信息")
+    claim_version(db, Vendor, vendor, allowed_status={VendorStatus.PENDING.value})
     instance = engine.start_workflow(
         db,
         company_id=user.company_id,
@@ -236,10 +237,15 @@ def on_vendor_rejected(db: Session, instance: WorkflowInstance) -> None:
 
 
 # ---------------------------------------------------------------- 联系人 / 银行 / 资质
-def list_contacts(db: Session, ctx: ScopeContext, vendor_id: int) -> list[VendorContact]:
+def list_contacts(db: Session, ctx: ScopeContext, vendor_id: int, limit: int = 200) -> list[VendorContact]:
     get_vendor(db, ctx, vendor_id)
     return list(
-        db.execute(select(VendorContact).where(VendorContact.vendor_id == vendor_id).order_by(VendorContact.id))
+        db.execute(
+            select(VendorContact)
+            .where(VendorContact.vendor_id == vendor_id)
+            .order_by(VendorContact.id)
+            .limit(limit)
+        )
         .scalars()
         .all()
     )
@@ -268,10 +274,15 @@ def add_contact(db: Session, user: User, vendor: Vendor, payload: dict[str, Any]
     return item
 
 
-def list_banks(db: Session, ctx: ScopeContext, vendor_id: int) -> list[VendorBank]:
+def list_banks(db: Session, ctx: ScopeContext, vendor_id: int, limit: int = 200) -> list[VendorBank]:
     get_vendor(db, ctx, vendor_id)
     return list(
-        db.execute(select(VendorBank).where(VendorBank.vendor_id == vendor_id).order_by(VendorBank.id))
+        db.execute(
+            select(VendorBank)
+            .where(VendorBank.vendor_id == vendor_id)
+            .order_by(VendorBank.id)
+            .limit(limit)
+        )
         .scalars()
         .all()
     )
@@ -308,10 +319,15 @@ def add_bank(db: Session, user: User, vendor: Vendor, payload: dict[str, Any]) -
     return item
 
 
-def list_licenses(db: Session, ctx: ScopeContext, vendor_id: int) -> list[VendorLicense]:
+def list_licenses(db: Session, ctx: ScopeContext, vendor_id: int, limit: int = 200) -> list[VendorLicense]:
     get_vendor(db, ctx, vendor_id)
     return list(
-        db.execute(select(VendorLicense).where(VendorLicense.vendor_id == vendor_id).order_by(VendorLicense.valid_to))
+        db.execute(
+            select(VendorLicense)
+            .where(VendorLicense.vendor_id == vendor_id)
+            .order_by(VendorLicense.valid_to)
+            .limit(limit)
+        )
         .scalars()
         .all()
     )

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.core.errors import BusinessRuleError, NotFoundError
+from app.core.errors import BusinessRuleError, ConflictError, NotFoundError
 from app.models.iam import Company, Role, SysFile, User
 
 
@@ -60,3 +60,31 @@ def serialize_page(result: dict[str, Any], serializer) -> dict[str, Any]:
         "page": result["page"],
         "page_size": result["page_size"],
     }
+
+
+def claim_version(
+    db: Session,
+    model: Any,
+    obj: Any,
+    *,
+    allowed_status: set[str] | None = None,
+) -> None:
+    """原子抢占业务单据（乐观锁）。
+
+    以 ``UPDATE ... WHERE version = 当前版本`` 抢占，SQLite 与 PostgreSQL 都能
+    阻止并发重复提交；失败即说明已被其他请求处理，直接返回 409。
+    """
+    current = int(getattr(obj, "version", 1) or 1)
+    stmt = (
+        update(model)
+        .where(model.id == obj.id, model.version == current)
+        .values(version=current + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if allowed_status is not None:
+        stmt = stmt.where(model.status.in_(allowed_status))
+    result = db.execute(stmt)
+    # 仅 UPDATE/DELETE 返回 CursorResult；通用 Result 未声明 rowcount，故按属性取。
+    if int(getattr(result, "rowcount", 0)) != 1:
+        raise ConflictError("单据状态已变化，请刷新后重试")
+    obj.version = current + 1

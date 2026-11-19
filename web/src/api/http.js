@@ -2,30 +2,33 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
 const BASE = import.meta.env.VITE_API_BASE || '/api/v1'
-const TOKEN_KEY = 'eoms_access_token'
-const REFRESH_KEY = 'eoms_refresh_token'
+const PROFILE_KEY = 'eoms_profile'
+const CSRF_COOKIE = 'eoms_csrf'
 
+function readCookie(name) {
+  const target = `${name}=`
+  const hit = document.cookie
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(target))
+  return hit ? decodeURIComponent(hit.slice(target.length)) : ''
+}
+
+// 令牌不再存 localStorage：access/refresh 由后端写 HttpOnly Cookie，
+// 前端只需读 CSRF Token 并在写操作时回传到 X-CSRF-Token 头。
 export const tokenStore = {
-  get access() {
-    return localStorage.getItem(TOKEN_KEY) || ''
-  },
-  get refresh() {
-    return localStorage.getItem(REFRESH_KEY) || ''
-  },
-  set(access, refresh) {
-    if (access) localStorage.setItem(TOKEN_KEY, access)
-    if (refresh) localStorage.setItem(REFRESH_KEY, refresh)
+  get csrf() {
+    return readCookie(CSRF_COOKIE)
   },
   clear() {
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(REFRESH_KEY)
-    localStorage.removeItem('eoms_profile')
+    localStorage.removeItem(PROFILE_KEY)
   }
 }
 
 const http = axios.create({
   baseURL: BASE,
-  timeout: 60000
+  timeout: 60000,
+  withCredentials: true
 })
 
 let refreshing = null
@@ -46,9 +49,10 @@ function newIdempotencyKey() {
 }
 
 http.interceptors.request.use((config) => {
-  const token = tokenStore.access
-  if (token) config.headers.Authorization = `Bearer ${token}`
-  if (['post', 'put', 'delete', 'patch'].includes((config.method || '').toLowerCase())) {
+  const method = (config.method || '').toLowerCase()
+  if (['post', 'put', 'delete', 'patch'].includes(method)) {
+    const csrf = tokenStore.csrf
+    if (csrf && !config.headers['X-CSRF-Token']) config.headers['X-CSRF-Token'] = csrf
     if (!config.headers['Idempotency-Key'] && !config.headers['idempotency-key']) {
       config.headers['Idempotency-Key'] = newIdempotencyKey()
     }
@@ -87,8 +91,7 @@ http.interceptors.response.use(
     if (response.status === 401 && !config.__retried && !config.url?.includes('/auth/')) {
       config.__retried = true
       try {
-        const access = await refreshAccess()
-        config.headers.Authorization = `Bearer ${access}`
+        await refreshAccess()
         return http.request(config)
       } catch (refreshError) {
         redirectToLogin()
@@ -111,13 +114,15 @@ http.interceptors.response.use(
 async function refreshAccess() {
   if (refreshing) return refreshing
   refreshing = (async () => {
-    const refreshToken = tokenStore.refresh
-    if (!refreshToken) throw new Error('no refresh token')
-    const resp = await axios.post(`${BASE}/auth/refresh`, { refresh_token: refreshToken }, { timeout: 15000 })
+    // refresh token 在 HttpOnly Cookie 中，这里不带 body；写操作需带 CSRF 头。
+    const resp = await axios.post(`${BASE}/auth/refresh`, null, {
+      timeout: 15000,
+      withCredentials: true,
+      headers: { 'X-CSRF-Token': tokenStore.csrf }
+    })
     const body = resp.data
-    if (!body || body.code !== 0 || !body.data?.access_token) throw new Error('refresh failed')
-    tokenStore.set(body.data.access_token, body.data.refresh_token)
-    return body.data.access_token
+    if (!body || body.code !== 0) throw new Error('refresh failed')
+    return body.data
   })()
   try {
     return await refreshing

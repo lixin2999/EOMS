@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote_plus
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,13 +46,21 @@ class Settings(BaseSettings):
     redis_timeout: float = 2.0
 
     access_token_minutes: int = 30
-    refresh_token_days: int = 7
+    refresh_token_days: int = 3
     login_max_fail: int = 5
     login_lock_minutes: int = 15
     max_sessions: int = 3
     captcha_ttl: int = 120
     password_min_length: int = 8
     password_expire_days: int = 90
+
+    # Cookie 认证（P2-15）：令牌不下发给前端 JS，改用 HttpOnly Cookie + CSRF Token。
+    cookie_secure: bool | None = None  # 未配置时：生产默认 True，其他环境 False
+    cookie_samesite: str = "lax"
+    cookie_domain: str = ""
+    access_cookie_name: str = "eoms_at"
+    refresh_cookie_name: str = "eoms_rt"
+    csrf_cookie_name: str = "eoms_csrf"
 
     aes_key: str = ""
 
@@ -67,7 +75,7 @@ class Settings(BaseSettings):
     presign_expire_seconds: int = 900
 
     workflow_due_hours: int = 24
-    workflow_lock_seconds: int = 20
+    workflow_lock_seconds: int = 60
     budget_alert_threshold: float = 0.9
 
     smtp_host: str = ""
@@ -84,6 +92,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://localhost:8080"
     rate_limit_per_minute: int = 300
     login_rate_limit_per_minute: int = 10
+    files_rate_limit_per_minute: int = 60
     idempotency_ttl: int = 86400
 
     @field_validator("env")
@@ -94,10 +103,35 @@ class Settings(BaseSettings):
             raise ValueError("EOMS_ENV 必须是 dev/staging/prod/test 之一")
         return value
 
+    @model_validator(mode="after")
+    def _validate_production_secrets(self) -> Settings:
+        """生产环境禁止以默认/占位密钥启动，避免 JWT 可伪造与敏感字段不可解。"""
+        if self.env != "prod":
+            return self
+        secret = (self.secret_key or "").strip()
+        if len(secret) < 32 or secret.startswith("eoms-dev") or "CHANGE_ME" in secret.upper():
+            raise ValueError("生产环境必须通过 EOMS_SECRET_KEY 配置至少 32 位的随机密钥")
+        if not self.aes_key:
+            raise ValueError("生产环境必须配置 EOMS_AES_KEY（32 字节 base64 或 hex）")
+        try:
+            _ = self.security_key
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        if self.storage_backend == "minio":
+            minio_secret = (self.minio_secret_key or "").strip()
+            if len(minio_secret) < 12 or minio_secret == "eoms-minio-secret" or "CHANGE_ME" in minio_secret.upper():
+                raise ValueError("生产环境必须通过 EOMS_MINIO_SECRET_KEY 配置强密码")
+        return self
+
     # ---------------- 派生属性 ----------------
     @property
     def is_prod(self) -> bool:
         return self.env == "prod"
+
+    @property
+    def cookie_secure_flag(self) -> bool:
+        """Cookie 是否带 Secure：未显式配置时生产默认为真。"""
+        return self.is_prod if self.cookie_secure is None else self.cookie_secure
 
     @property
     def sqlite_path(self) -> Path:

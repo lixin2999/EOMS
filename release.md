@@ -27,6 +27,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.0.1 | 2026-11-19 | 问题修复 | 修复：RLS 通知、付款幂等与并发、审批入账解耦、报表口径与导出审计、令牌与会话安全加固 |
 | V1.0.0 | 2026-11-18 | 首次正式发布 | EOMS 全模块上线：审批、项目、供应商、合同、成本、报表、平台管理、容器化与监控 |
 
 ---
@@ -127,3 +128,94 @@
 - `docs/用户手册.md`：面向业务用户的操作说明。
 - `docs/部署文档.md`：面向运维的部署、升级、备份与故障处理。
 - `docs/企业运营管理系统（EOMS）概要设计文档.md`：需求与设计基线。
+
+### V1.0.1（2026-11-19）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+依据《EOMS 代码审查报告》完成 3 个 P0、11 个 P1、15 个 P2 的全量修复，重点覆盖资金并发正确性、审批与成本归集解耦、报表口径与导出合规、令牌与会话安全、列表性能与纵深防御。不新增业务功能，接口响应结构除认证与报表 `meta` 字段外保持兼容。
+
+**新增功能**
+
+- 成本待补记：新增 `fin_pending_cost` 暂存表、`GET /api/v1/finance/pending-costs` 查询接口与每 10 分钟定时补记任务（`eoms.cost.post_pending`）。
+- 会话 Cookie：登录改为下发 HttpOnly 会话 Cookie（`eoms_at` / `eoms_rt`）+ 双提交 CSRF（`eoms_csrf` + `X-CSRF-Token`），响应体不再返回令牌明文。
+- 报表 `meta`：报表与导出返回 `meta.source`（`SNAPSHOT` / `REALTIME`），便于区分快照与实时口径。
+
+**变更/优化**
+
+- 付款金额同步由「累加」改为按 Payment 聚合重算；副作用（预算告警、供应商项目回写、合同超付校验）仅在真正新建成本记录时执行。
+- 报表在满足条件（公司维度、无项目筛选、单月且期间已关账）时直接读期间快照，审批效率改为 SQL 聚合（不再全量载入 ORM 对象），超时率分母按业务类型任务数计算。
+- 项目偏差基线改为取最新版本，避免多次确认计划后指标翻倍。
+- 列表接口统一加上限（默认 200、最大 500）：项目验收/基线/变更、供应商评价/合作项目/联系人/银行账户/资质。
+- 供应商合同风险、项目预算概览、用户列表改为批量查询，消除 N+1。
+- 邮件出箱改为「认领 → 提交 → 逐条发送」，缩短事务持有时间；SMTP 未配置或收件人为空记 `SKIPPED` 并告警。
+- MinIO 上传按 `sha256` 判重跳过重复对象；文件下载流改为 `BackgroundTask` 关闭句柄，避免连接泄漏。
+- 中间件顺序调整为 `SecurityHeaders → RateLimit → Idempotency → CSRF → Context → CORS`，使 429/409/403 响应带 CORS 头；文件下载独立限流桶（默认 60 次/分钟）。
+- 刷新令牌有效期默认由 7 天调整为 3 天。
+
+**问题修复**
+
+- P0-1：通知中心 RLS 作用域下沉到 `get_current_user`，避免旁路查询漏隔离。
+- P0-2：付款并发重复入账——`pay_payment` / `cancel_payment` 增加行锁，成本记录按 `record_key` 幂等。
+- P0-3：生产密钥缺失时启动即失败（`model_validator` + `docker-compose` 必填校验）。
+- P1-1：关账后审批不再整体回滚，成本进入待补记表，反关账或定时任务自动补记。
+- P1-2：提交类操作（报销/请假/文档/供应商/发起流程）补行锁与版本校验。
+- P1-3：同一报销单重复创建付款单被部分唯一索引拦截，返回业务错误。
+- P1-4：分布式锁覆盖到事务提交（`cache.hold` + 会话收尾释放），TTL 取 `max(workflow_lock_seconds, 语句超时 + 30s)`。
+- P1-5：报表导出写入 `EXPORT_REPORT` 审计（含筛选条件与导出条数）。
+- P1-6：报表按口径走期间快照，未命中才实时聚合。
+- P1-7：项目偏差只统计最新基线版本。
+- P1-8：审批超时率分母修正为该业务类型的任务数。
+- P1-9：刷新令牌原子轮换，重复使用触发重放检测（拉黑令牌、清空该用户会话、写审计）。
+- P1-10：PDF 导出对 `Paragraph` 内容做 XML 转义，超 2000 行给出截断提示。
+- P1-11：登录页不再预填演示账号密码，演示提示仅在开发构建显示。
+- P2-1：项目关闭校验排除已取消任务。
+- P2-2：流程定义版本并发改为捕获唯一约束冲突后重试。
+- P2-3：`CC` 节点在流程推进时写入抄送记录并发送站内通知，不再被静默跳过。
+- P2-4：变更单撤回后置 `CANCELED` 并留审计，避免悬挂。
+- P2-5：`record_cost` 并发幂等（`record_key` 冲突回查）。
+- P2-6：Excel 导出对以 `= + - @` 等开头的单元格前置 `'`，防公式注入。
+- P2-7：邮件出箱长事务与吞错问题修复（见上）。
+- P2-8：三处 N+1 查询优化。
+- P2-9：明细列表补上限，避免超大响应。
+- P2-10：幂等键并发互斥，抢占失败返回 409。
+- P2-11：nginx 静态资源与 `index.html` 重复声明安全响应头。
+- P2-12：登录与文件下载独立限流桶。
+- P2-13：MinIO 重复上传与连接占用。
+- P2-14：文档密级影响可见性——非超管仅可见非密级文件与本人创建的密件。
+- P2-15：前端令牌改为 HttpOnly Cookie + CSRF（见上）。
+
+**数据库变更**
+
+- 新增迁移 `a1f7c2d9e4b6`：建 `fin_pending_cost` 表（含 `uq_fin_pending_cost_record_key` 与 `(company_id, status, period)` 等索引）、`fin_payment` 部分唯一索引 `uq_fin_payment_expense_active`（`expense_id` 非空且状态为 `PENDING`/`PAID` 时唯一），PostgreSQL 下同时启用 RLS 策略。
+- 新增迁移 `b7e3d5a10c48`：建 `wf_instance` 部分唯一索引 `uq_wf_instance_biz_running`（`company_id, biz_type, biz_id`，仅约束 `status='RUNNING'`）。
+
+**升级说明**
+
+1. 备份数据库后执行 `alembic upgrade head`（依次应用 `a1f7c2d9e4b6`、`b7e3d5a10c48`）。
+2. `wf_instance` 部分唯一索引要求存量不存在同一业务单据的多条 `RUNNING` 实例。排查 SQL：
+   `SELECT company_id, biz_type, biz_id, count(*) FROM wf_instance WHERE status='RUNNING' GROUP BY 1,2,3 HAVING count(*) > 1;`
+   若有结果，需先人工关停多余实例，否则迁移会失败。
+3. 同理由 `fin_payment` 部分唯一索引约束的存量重复付款单需先行处理（保留一条、其余置 `CANCELED`）。
+4. 启用 Cookie 会话后生产必须通过 HTTPS 访问，并设置 `EOMS_COOKIE_SECURE=true`；反向代理需透传 `X-Forwarded-Proto`，否则安全 Cookie 不会被浏览器回传。
+5. 仍使用 `Authorization: Bearer` 的脚本与第三方集成不受影响（CSRF 仅对 Cookie 来源生效），建议逐步迁移至 Cookie。
+
+**验证情况**
+
+- `ruff check .`、`mypy app`、`pytest tests --cov=app --cov-fail-under=80`、`cd web && npm run build` 全部通过。
+- 新增 `tests/test_13_hardening.py` 覆盖：关账后待补记成本、付款幂等、部分唯一索引、导出审计、超时率分母、基线版本、关闭校验、PDF 转义、Cookie/CSRF、刷新令牌重放、CC 节点。
+- 本机无 Docker：nginx 头继承、PG RLS、MinIO 判重需在 CI/预发复验。
+
+**已知限制**
+
+- 报表快照仅在「公司维度 + 单月已关账」等条件命中时生效，带项目筛选或自定义分组仍走实时聚合。
+- 待补记成本依赖 Celery Beat 与 Redis，纯单机无 Celery 环境需在反关账时手工触发补记。
+- 密级隔离只作用于文件审批列表与详情，工作流待办仍按流程可见性展示。
+
+**关联文档**
+
+- `README.md`：认证方式已更新为 Cookie + CSRF。
+- `docs/用户手册.md`：补充重新登录提示、成本待补记、文档密级可见性说明。
+- `docs/部署文档.md`：补迁移顺序、HTTPS 与反代要求。

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.cache import cache
 from app.core.config import settings
 from app.core.errors import ForbiddenError, UnauthorizedError
-from app.core.scope import ScopeContext, apply_rls, build_scope
+from app.core.scope import ScopeContext, apply_rls, build_scope, prime_rls
 from app.core.security import decode_token
 from app.db.session import get_db as _get_db
 from app.models.iam import User
@@ -42,9 +42,16 @@ def get_current_user(
     db: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> User:
-    if credentials is None or not credentials.credentials:
+    # 优先 Authorization 头（脚本/测试/灰度期），其次 HttpOnly Cookie（浏览器会话）。
+    source = "header"
+    token = credentials.credentials if credentials is not None else None
+    if not token:
+        token = request.cookies.get(settings.access_cookie_name)
+        source = "cookie"
+    if not token:
         raise UnauthorizedError("请先登录")
-    payload = decode_token(credentials.credentials, "access")
+    request.state.auth_source = source
+    payload = decode_token(token, "access")
     jti = str(payload.get("jti") or "")
     if cache.get(f"bl:access:{jti}"):
         raise UnauthorizedError("登录状态已注销")
@@ -73,19 +80,28 @@ def get_current_user(
     request.state.user = user
     request.state.jti = jti
     request.state.token_payload = payload
+    # 认证成功即注入租户上下文并构建数据域：避免业务端点遗漏 Scope 依赖时
+    # 在 PostgreSQL RLS 下静默读不到数据（如通知中心）。
+    _ensure_scope(request, db, user)
     return user
+
+
+def _ensure_scope(request: Request, db: Session, user: User) -> ScopeContext:
+    cached = getattr(request.state, "scope", None)
+    if cached is not None:
+        return cached
+    prime_rls(db, user.company_id)
+    scope = build_scope(db, user)
+    apply_rls(db, scope)
+    request.state.scope = scope
+    return scope
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
 def get_scope(request: Request, db: DbSession, user: CurrentUser) -> ScopeContext:
-    if getattr(request.state, "scope", None) is not None:
-        return request.state.scope
-    scope = build_scope(db, user)
-    apply_rls(db, scope)
-    request.state.scope = scope
-    return scope
+    return _ensure_scope(request, db, user)
 
 
 Scope = Annotated[ScopeContext, Depends(get_scope)]

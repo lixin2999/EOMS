@@ -55,6 +55,23 @@ def _use_minio() -> bool:
     return settings.storage_backend == "minio"
 
 
+def _minio_exists(client, bucket: str, object_key: str) -> bool:
+    """判断对象是否已存在；存储端异常时降级为直接上传，不阻断业务。"""
+    from minio.error import S3Error
+
+    try:
+        client.stat_object(bucket, object_key)
+        return True
+    except S3Error as exc:
+        if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket", "ResourceNotFound"}:
+            return False
+        logger.warning("MinIO 对象探测失败 %s: %s", object_key, exc)
+        return False
+    except Exception as exc:  # noqa: BLE001 - 兼容旧版/网络异常
+        logger.warning("MinIO 对象探测异常 %s: %s", object_key, exc)
+        return False
+
+
 def _local_path(object_key: str) -> Path:
     base = settings.local_storage_path.resolve()
     target = (base / object_key.lstrip("/")).resolve()
@@ -97,9 +114,11 @@ def save_stream(
             bucket = settings.minio_bucket
             if not client.bucket_exists(bucket):
                 client.make_bucket(bucket)
-            client.fput_object(
-                bucket, object_key, str(tmp_path), content_type=content_type or "application/octet-stream"
-            )
+            # 按 sha256 去重命名：已存在则跳过上传，避免重复传输与连接占用
+            if not _minio_exists(client, bucket, object_key):
+                client.fput_object(
+                    bucket, object_key, str(tmp_path), content_type=content_type or "application/octet-stream"
+                )
         else:
             target = _local_path(object_key)
             target.parent.mkdir(parents=True, exist_ok=True)

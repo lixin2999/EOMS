@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
 from app.api.response import ok
@@ -181,10 +181,15 @@ def restore_vendor(vendor_id: int, db: DbSession, user: CurrentUser, ctx: Scope)
 
 # ------------------------------------------------------------------ 联系人 / 银行 / 资质
 @router.get("/{vendor_id}/contacts", summary="供应商联系人", dependencies=[VIEW])
-def list_contacts(vendor_id: int, db: DbSession, ctx: Scope) -> dict:
+def list_contacts(
+    vendor_id: int, db: DbSession, ctx: Scope, limit: int = Query(200, ge=1, le=500)
+) -> dict:
     sensitive = _sensitive(ctx)
     return ok(
-        [serialize_contact(row, sensitive=sensitive) for row in vendor_service.list_contacts(db, ctx, vendor_id)]
+        [
+            serialize_contact(row, sensitive=sensitive)
+            for row in vendor_service.list_contacts(db, ctx, vendor_id, limit=limit)
+        ]
     )
 
 
@@ -196,9 +201,13 @@ def add_contact(vendor_id: int, payload: ContactIn, db: DbSession, user: Current
 
 
 @router.get("/{vendor_id}/banks", summary="供应商银行账户", dependencies=[VIEW])
-def list_banks(vendor_id: int, db: DbSession, ctx: Scope) -> dict:
+def list_banks(
+    vendor_id: int, db: DbSession, ctx: Scope, limit: int = Query(200, ge=1, le=500)
+) -> dict:
     sensitive = _sensitive(ctx)
-    return ok([_bank_row(row, sensitive) for row in vendor_service.list_banks(db, ctx, vendor_id)])
+    return ok(
+        [_bank_row(row, sensitive) for row in vendor_service.list_banks(db, ctx, vendor_id, limit=limit)]
+    )
 
 
 @router.post("/{vendor_id}/banks", summary="新增银行账户", dependencies=[MANAGE])
@@ -209,8 +218,10 @@ def add_bank(vendor_id: int, payload: BankIn, db: DbSession, user: CurrentUser, 
 
 
 @router.get("/{vendor_id}/licenses", summary="供应商资质", dependencies=[VIEW])
-def list_licenses(vendor_id: int, db: DbSession, ctx: Scope) -> dict:
-    rows = vendor_service.list_licenses(db, ctx, vendor_id)
+def list_licenses(
+    vendor_id: int, db: DbSession, ctx: Scope, limit: int = Query(200, ge=1, le=500)
+) -> dict:
+    rows = vendor_service.list_licenses(db, ctx, vendor_id, limit=limit)
     file_map = _files(db, (row.file_id for row in rows if row.file_id))
     return ok([{**to_dict(row), "file": file_map.get(row.file_id or 0, {})} for row in rows])
 
@@ -224,8 +235,10 @@ def add_license(vendor_id: int, payload: LicenseIn, db: DbSession, user: Current
 
 # ------------------------------------------------------------------ 项目关联
 @router.get("/{vendor_id}/projects", summary="供应商合作项目", dependencies=[VIEW])
-def list_vendor_projects(vendor_id: int, db: DbSession, ctx: Scope) -> dict:
-    rows = contract_service.list_vendor_projects(db, ctx, vendor_id)
+def list_vendor_projects(
+    vendor_id: int, db: DbSession, ctx: Scope, limit: int = Query(200, ge=1, le=500)
+) -> dict:
+    rows = contract_service.list_vendor_projects(db, ctx, vendor_id, limit=limit)
     projects = _projects(db, (row.project_id for row in rows))
     return ok([{**to_dict(row), "project_name": projects.get(row.project_id, "")} for row in rows])
 
@@ -240,8 +253,14 @@ def bind_project(vendor_id: int, payload: BindProjectIn, db: DbSession, user: Cu
 
 # ------------------------------------------------------------------ 评价
 @router.get("/{vendor_id}/evaluations", summary="供应商评价记录", dependencies=[VIEW])
-def list_evaluations(vendor_id: int, db: DbSession, ctx: Scope, year: int | None = None) -> dict:
-    rows = evaluation_service.list_evaluations(db, ctx, vendor_id, year=year)
+def list_evaluations(
+    vendor_id: int,
+    db: DbSession,
+    ctx: Scope,
+    year: int | None = None,
+    limit: int = Query(200, ge=1, le=500),
+) -> dict:
+    rows = evaluation_service.list_evaluations(db, ctx, vendor_id, year=year, limit=limit)
     names = _names(db, (row.evaluator_id for row in rows))
     projects = _projects(db, (row.project_id for row in rows if row.project_id))
     return ok(

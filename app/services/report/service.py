@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import BusinessRuleError, NotFoundError
 from app.core.scope import ScopeContext
-from app.models.enums import ReportCode
+from app.models.enums import PeriodStatus, ReportCode
+from app.models.finance import Period
 from app.models.iam import Company
 from app.models.report import ReportSnapshot
 from app.services.report import metrics
@@ -36,23 +37,93 @@ def build_report(
     year: int | None = None,
 ) -> dict:
     code = code.upper()
+    snapshot = _snapshot_payload(
+        db, ctx, code, start=start, end=end, year=year, project_id=project_id, group_by=group_by
+    )
+    if snapshot is not None:
+        return snapshot
     if code == ReportCode.OVERVIEW.value:
-        return metrics.overview(db, ctx, year=year)
-    if code == ReportCode.REVENUE.value:
-        return metrics.revenue_report(db, ctx, start=start, end=end, group_by=group_by or "period")
-    if code == ReportCode.CASHFLOW.value:
-        return metrics.cashflow_report(db, ctx, start=start, end=end, project_id=project_id)
-    if code == ReportCode.PROFIT.value:
-        return metrics.profit_report(
+        result = metrics.overview(db, ctx, year=year)
+    elif code == ReportCode.REVENUE.value:
+        result = metrics.revenue_report(db, ctx, start=start, end=end, group_by=group_by or "period")
+    elif code == ReportCode.CASHFLOW.value:
+        result = metrics.cashflow_report(db, ctx, start=start, end=end, project_id=project_id)
+    elif code == ReportCode.PROFIT.value:
+        result = metrics.profit_report(
             db, ctx, start=start, end=end, project_id=project_id, group_by=group_by or "period"
         )
-    if code == ReportCode.PROJECT_PNL.value:
-        return metrics.project_pnl_report(db, ctx, start=start, end=end, project_id=project_id)
-    if code == ReportCode.VENDOR_SPEND.value:
-        return metrics.vendor_spend_report(db, ctx, start=start, end=end)
-    if code == ReportCode.APPROVAL_EFFICIENCY.value:
-        return metrics.approval_efficiency(db, ctx, start=start, end=end)
-    raise BusinessRuleError("未知报表编码")
+    elif code == ReportCode.PROJECT_PNL.value:
+        result = metrics.project_pnl_report(db, ctx, start=start, end=end, project_id=project_id)
+    elif code == ReportCode.VENDOR_SPEND.value:
+        result = metrics.vendor_spend_report(db, ctx, start=start, end=end)
+    elif code == ReportCode.APPROVAL_EFFICIENCY.value:
+        result = metrics.approval_efficiency(db, ctx, start=start, end=end)
+    else:
+        raise BusinessRuleError("未知报表编码")
+    # meta 为 dict，导出时会被 _scalar_rows 自动跳过。
+    result["meta"] = {"source": "REALTIME"}
+    return result
+
+
+def _snapshot_payload(
+    db: Session,
+    ctx: ScopeContext,
+    code: str,
+    *,
+    start: str | None = None,
+    end: str | None = None,
+    year: int | None = None,
+    project_id: int | None = None,
+    group_by: str | None = None,
+) -> dict | None:
+    """命中已关账期间的公司级快照时直接复用，保证报表口径与关账一致。
+
+    仅当维度可对齐快照时才命中：无项目筛选、按月分组、单月区间且该期间已关账；
+    ``OVERVIEW`` 按年度口径，要求快照 ``payload.year`` 与目标年度一致。
+    """
+    if project_id is not None or group_by not in (None, "period"):
+        return None
+    base = select(ReportSnapshot).where(
+        ReportSnapshot.company_id == ctx.company_id,
+        ReportSnapshot.report_code == code,
+        ReportSnapshot.dim_type == "COMPANY",
+        ReportSnapshot.dim_value == "0",
+    )
+    target_year = year or today().year
+    if code == ReportCode.OVERVIEW.value:
+        if year is not None and year != today().year:
+            return None
+        item = db.execute(base.order_by(ReportSnapshot.period.desc()).limit(1)).scalar_one_or_none()
+        if item is None:
+            return None
+        payload = dict(item.payload or {})
+        if int(payload.get("year") or 0) != target_year:
+            return None
+        return {
+            **payload,
+            "meta": {"source": "SNAPSHOT", "period": item.period, "version": item.version},
+        }
+
+    if not start or not end or start != end or len(start) != 7 or start[4] != "-":
+        return None
+    closed = db.execute(
+        select(Period.id).where(
+            Period.company_id == ctx.company_id,
+            Period.period == start,
+            Period.status == PeriodStatus.CLOSED.value,
+        )
+    ).scalar_one_or_none()
+    if closed is None:
+        return None
+    item = db.execute(
+        base.where(ReportSnapshot.period == start).limit(1)
+    ).scalar_one_or_none()
+    if item is None:
+        return None
+    return {
+        **dict(item.payload or {}),
+        "meta": {"source": "SNAPSHOT", "period": start, "version": item.version},
+    }
 
 
 def _snapshot_period(period: str | None) -> str:

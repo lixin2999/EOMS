@@ -26,7 +26,8 @@ class LoginIn(InModel):
 
 
 class RefreshIn(InModel):
-    refresh_token: str = Field(min_length=10)
+    # Cookie 模式下前端不传 refresh_token，保留字段兼容旧客户端与脚本调用。
+    refresh_token: str | None = Field(default=None, min_length=10)
 
 
 class LogoutIn(InModel):

@@ -210,6 +210,28 @@ def assert_project_access(db: Session, ctx: ScopeContext, project_id: int) -> No
         raise ForbiddenError("无权访问该项目数据")
 
 
+def prime_rls(db: Session, company_id: int) -> None:
+    """在构建数据域前注入最小租户上下文。
+
+    ``build_scope`` 需要读取 ``pm_project`` 等受 RLS 保护的表；若连接上尚未
+    注入 ``app.company_id``，查询会被策略过滤为空，导致 PROJECT 数据域失效。
+    这里先按公司边界放行（不放行跨公司），再在 ``apply_rls`` 中收敛到最终域。
+    """
+    if not (settings.rls_enabled and settings.is_postgres):
+        return
+    from sqlalchemy import text
+
+    values = {
+        "app.company_id": str(company_id),
+        "app.bypass": "off",
+        "app.scope_all": "0",
+        "app.dept_ids": "",
+        "app.project_ids": "",
+    }
+    for key, value in values.items():
+        db.execute(text("SELECT set_config(:key, :value, true)"), {"key": key, "value": value})
+
+
 def apply_rls(db: Session, ctx: ScopeContext) -> None:
     """PostgreSQL 行级安全兜底：设置会话级 GUC（事务内生效）。"""
     if not (settings.rls_enabled and settings.is_postgres):

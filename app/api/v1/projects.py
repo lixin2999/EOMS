@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
 from app.api.response import ok
@@ -200,8 +200,10 @@ def start_execution(project_id: int, db: DbSession, user: CurrentUser, ctx: Scop
 
 
 @router.get("/{project_id}/baseline", summary="项目计划基线", dependencies=[VIEW])
-def list_baseline(project_id: int, db: DbSession, ctx: Scope) -> dict:
-    rows = project_service.baseline_list(db, ctx, project_id)
+def list_baseline(
+    project_id: int, db: DbSession, ctx: Scope, limit: int = Query(200, ge=1, le=500)
+) -> dict:
+    rows = project_service.baseline_list(db, ctx, project_id, limit=limit)
     return ok([to_dict(item) for item in rows])
 
 
@@ -375,8 +377,10 @@ def delete_milestone(milestone_id: int, db: DbSession, user: CurrentUser, ctx: S
 
 # ------------------------------------------------------------------ 变更
 @router.get("/{project_id}/changes", summary="变更记录", dependencies=[VIEW])
-def list_changes(project_id: int, db: DbSession, ctx: Scope) -> dict:
-    rows = change_service.list_changes(db, ctx, project_id)
+def list_changes(
+    project_id: int, db: DbSession, ctx: Scope, limit: int = Query(200, ge=1, le=500)
+) -> dict:
+    rows = change_service.list_changes(db, ctx, project_id, limit=limit)
     names = _names(db, (row.applicant_id for row in rows))
     return ok([{**to_dict(row), "applicant_name": names.get(row.applicant_id, "")} for row in rows])
 
@@ -442,8 +446,10 @@ def create_report(project_id: int, payload: ProjectReportIn, db: DbSession, user
 
 # ------------------------------------------------------------------ 验收
 @router.get("/{project_id}/acceptances", summary="验收单列表", dependencies=[VIEW])
-def list_acceptances(project_id: int, db: DbSession, ctx: Scope) -> dict:
-    rows = acceptance_service.list_acceptances(db, ctx, project_id)
+def list_acceptances(
+    project_id: int, db: DbSession, ctx: Scope, limit: int = Query(200, ge=1, le=500)
+) -> dict:
+    rows = acceptance_service.list_acceptances(db, ctx, project_id, limit=limit)
     names = _names(db, (row.applicant_id for row in rows))
     file_map = _files(db, (row.sign_file_id for row in rows if row.sign_file_id))
     items = []

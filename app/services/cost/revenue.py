@@ -172,6 +172,7 @@ def auto_from_acceptance(
     )
     db.add(item)
     db.flush()
+    # 期间已关账时验收自动计收不影响验收动作：成本转入待补记，开账后补记。
     record_cost(
         db,
         company_id=item.company_id,
@@ -185,6 +186,7 @@ def auto_from_acceptance(
         currency=item.currency,
         applicant_id=item.creator_id,
         source_no=item.no,
+        allow_pending=True,
     )
     write_audit(
         db,

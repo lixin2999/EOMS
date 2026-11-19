@@ -249,10 +249,9 @@ def delete_role(db: Session, operator: User, ctx: ScopeContext, role_id: int) ->
         raise NotFoundError("角色不存在")
     if role.is_builtin:
         raise BusinessRuleError("内置角色不能删除")
-    used = db.execute(select(User.id).where(User.company_id == ctx.company_id)).scalars()
-    for user_id in used:
-        owner = db.get(User, user_id)
-        if owner is not None and role.id in (owner.role_ids or []):
+    used = db.execute(select(User).where(User.company_id == ctx.company_id)).scalars()
+    for owner in used:
+        if role.id in (owner.role_ids or []):
             raise BusinessRuleError("角色已被用户使用，不能删除")
     db.execute(delete(RolePermission).where(RolePermission.role_id == role.id))
     db.delete(role)
@@ -550,14 +549,27 @@ def serialize_customer(customer: Customer) -> dict:
     }
 
 
-def serialize_user(db: Session, user: User) -> dict:
-    dept = db.get(Dept, user.dept_id) if user.dept_id else None
+def dept_name_map(db: Session, dept_ids: list[int]) -> dict[int, str]:
+    """批量取部门名称，供用户列表序列化复用（避免逐行 db.get）。"""
+    ids = sorted({int(item) for item in dept_ids if item})
+    if not ids:
+        return {}
+    rows = db.execute(select(Dept.id, Dept.name).where(Dept.id.in_(ids))).all()
+    return {int(dept_id): str(name) for dept_id, name in rows}
+
+
+def serialize_user(db: Session, user: User, dept_names: dict[int, str] | None = None) -> dict:
+    if dept_names is not None:
+        dept_name = dept_names.get(user.dept_id or 0, "") if user.dept_id else ""
+    else:
+        dept = db.get(Dept, user.dept_id) if user.dept_id else None
+        dept_name = dept.name if dept else ""
     return {
         "id": user.id,
         "username": user.username,
         "real_name": user.real_name,
         "dept_id": user.dept_id,
-        "dept_name": dept.name if dept else "",
+        "dept_name": dept_name,
         "position": user.position,
         "phone": mask_phone(_safe_decrypt(user.phone_enc)),
         "email": user.email,

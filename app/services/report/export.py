@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from io import BytesIO
 from typing import Any
+from xml.sax.saxutils import escape
 
 from app.core.errors import BusinessRuleError
 
@@ -22,6 +23,22 @@ REPORT_TITLES = {
 }
 
 DETAIL_KEYS = ("monthly", "items", "rows", "trend", "evaluations")
+PDF_MAX_DETAIL_ROWS = 2000
+
+
+def _pdf_text(value: Any) -> str:
+    """把任意值转为 reportlab Paragraph 安全文本（转义 XML 实体，换行转 <br/>）。"""
+    if value is None:
+        return ""
+    text = escape(str(value))
+    return text.replace("\r\n", "<br/>").replace("\n", "<br/>").replace("\r", "<br/>")
+
+
+def _excel_cell(value: Any) -> Any:
+    """防止 Excel/CSV 公式注入：危险前缀的文本加前导单引号。"""
+    if isinstance(value, str) and value[:1] in {"=", "+", "-", "@", "\t", "\r"}:
+        return "'" + value
+    return value
 
 
 def _label(key: str) -> str:
@@ -110,7 +127,7 @@ def build_excel(report_code: str, payload: dict) -> bytes:
         cell.font = Font(bold=True)
         cell.fill = PatternFill("solid", fgColor="DDEBF7")
     for label, value in _scalar_rows(payload):
-        summary.append([label, value])
+        summary.append([_excel_cell(label), _excel_cell(value)])
     summary.column_dimensions["A"].width = 26
     summary.column_dimensions["B"].width = 24
 
@@ -129,7 +146,7 @@ def build_excel(report_code: str, payload: dict) -> bytes:
                 value = row.get(header)
                 if isinstance(value, (dict, list)):
                     value = str(value)
-                values.append(value)
+                values.append(_excel_cell(value))
             sheet.append(values)
         for index, header in enumerate(headers, start=1):
             width = max(len(str(_label(header))) * 2, 14)
@@ -176,16 +193,22 @@ def build_pdf(report_code: str, payload: dict) -> bytes:
         bottomMargin=12 * mm,
         title=REPORT_TITLES.get(report_code, report_code),
     )
-    story: list[Any] = [Paragraph(REPORT_TITLES.get(report_code, report_code), title_style), Spacer(1, 6)]
+    story: list[Any] = [
+        Paragraph(_pdf_text(REPORT_TITLES.get(report_code, report_code)), title_style),
+        Spacer(1, 6),
+    ]
     story.append(
-        Paragraph(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", normal)
+        Paragraph(_pdf_text(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"), normal)
     )
     story.append(Spacer(1, 8))
 
     scalar = _scalar_rows(payload)
     if scalar:
         data = [[Paragraph("指标", cell_style), Paragraph("数值", cell_style)]]
-        data += [[Paragraph(str(label), cell_style), Paragraph(str(value), cell_style)] for label, value in scalar]
+        data += [
+            [Paragraph(_pdf_text(label), cell_style), Paragraph(_pdf_text(value), cell_style)]
+            for label, value in scalar
+        ]
         table = Table(data, colWidths=[70 * mm, 70 * mm], repeatRows=1)
         table.setStyle(
             TableStyle(
@@ -202,10 +225,18 @@ def build_pdf(report_code: str, payload: dict) -> bytes:
     _, rows = _detail(payload)
     if rows:
         story.append(PageBreak())
+        if len(rows) > PDF_MAX_DETAIL_ROWS:
+            story.append(
+                Paragraph(
+                    f"明细超过 {PDF_MAX_DETAIL_ROWS} 行，已截断，请使用 Excel 导出完整数据。",
+                    normal,
+                )
+            )
+            story.append(Spacer(1, 6))
         headers = list(rows[0].keys())[:12]
-        data = [[Paragraph(_label(header), cell_style) for header in headers]]
-        for row in rows[:2000]:
-            data.append([Paragraph(str(row.get(header, "")), cell_style) for header in headers])
+        data = [[Paragraph(_pdf_text(_label(header)), cell_style) for header in headers]]
+        for row in rows[:PDF_MAX_DETAIL_ROWS]:
+            data.append([Paragraph(_pdf_text(row.get(header, "")), cell_style) for header in headers])
         width = 270 * mm / max(len(headers), 1)
         table = Table(data, colWidths=[width] * len(headers), repeatRows=1)
         table.setStyle(

@@ -22,6 +22,7 @@ celery_app = Celery(
         "app.tasks.reports",
         "app.tasks.vendor",
         "app.tasks.project",
+        "app.tasks.cost",
     ],
 )
 
@@ -65,6 +66,10 @@ celery_app.conf.update(
         "project-health": {
             "task": "eoms.project.health_check",
             "schedule": crontab(hour=9, minute=0),
+        },
+        "cost-post-pending": {
+            "task": "eoms.cost.post_pending",
+            "schedule": crontab(minute="*/10"),
         },
     },
 )

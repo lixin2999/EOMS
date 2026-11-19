@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 
 from app.api.response import ok
@@ -29,6 +29,7 @@ from app.services.cost import budget as budget_service
 from app.services.cost import budget_admin as budget_admin_service
 from app.services.cost import cost as cost_service
 from app.services.cost import payment as payment_service
+from app.services.cost import pending as pending_service
 from app.services.cost import period as period_service
 from app.services.cost import receipt as receipt_service
 from app.services.cost import revenue as revenue_service
@@ -393,6 +394,34 @@ def close_period(payload: PeriodIn, db: DbSession, user: CurrentUser) -> dict:
 def reopen_period(payload: PeriodIn, db: DbSession, user: CurrentUser) -> dict:
     row = period_service.reopen_period(db, user, payload.period, payload.remark or "")
     return ok(to_dict(row), f"期间 {payload.period} 已反关账")
+
+
+@router.get("/pending-costs", summary="待补记成本（期间关账暂存）", dependencies=[COST])
+def list_pending_costs(
+    db: DbSession,
+    ctx: Scope,
+    limit: int = Query(50, ge=1, le=500),
+) -> dict:
+    """列出因期间关账而暂存的成本，供财务核对与手工触发补记。"""
+    data = pending_service.pending_summary(db, ctx.company_id, limit=limit)
+    projects = _projects(db, (item.project_id for item in data["items"]))
+    items = []
+    for row in data["items"]:
+        record = _with_project(to_dict(row), row.project_id, projects)
+        record["contract_no"] = _contracts(db, [row.contract_id] if row.contract_id else []).get(
+            row.contract_id or 0, ""
+        )
+        items.append(record)
+    return ok(
+        {
+            "items": items,
+            "count": data["count"],
+            "total_count": data["total_count"],
+            "amount": float(data["amount"]),
+            "periods": pending_service.pending_periods(db, ctx.company_id),
+            "generated_at": data["generated_at"],
+        }
+    )
 
 
 @router.get("/accounts", summary="费用科目", dependencies=[VIEW])

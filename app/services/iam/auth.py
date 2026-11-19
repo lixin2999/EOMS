@@ -224,6 +224,23 @@ def refresh(db: Session, refresh_token: str, ip: str, ua: str) -> dict[str, Any]
         raise UnauthorizedError("密码已变更，请重新登录")
 
     expire_ts = int(payload.get("exp", 0))
+    # 原子轮换：同一 refresh 只能成功换一次。抢占失败说明已使用过，
+    # 按令牌重放处理：作废该令牌与用户全部会话，强制重新登录。
+    replay_ttl = max(expire_ts - int(datetime.now().timestamp()), 1)
+    if not cache.set_nx(f"rot:{jti}", str(user.id), replay_ttl):
+        _blacklist(jti, "refresh", expire_ts)
+        _clear_sessions(user.id)
+        write_audit(
+            db,
+            user=None,
+            action="REFRESH_REPLAY_DETECTED",
+            target_type="USER",
+            target_id=user.id,
+            company_id=user.company_id,
+            after={"jti": jti, "ip": ip, "ua": ua[:255]},
+        )
+        logger.warning("刷新令牌重放检测 user_id=%s jti=%s ip=%s", user.id, jti, ip)
+        raise UnauthorizedError("登录已失效，请重新登录")
     _blacklist(jti, "refresh", expire_ts)
     _remove_session(user.id, jti)
 

@@ -403,13 +403,14 @@ def _snapshot_baseline(db: Session, project_id: int) -> int:
     return version
 
 
-def baseline_list(db: Session, ctx: ScopeContext, project_id: int) -> list[TaskBaseline]:
+def baseline_list(db: Session, ctx: ScopeContext, project_id: int, limit: int = 200) -> list[TaskBaseline]:
     get_project(db, ctx, project_id)
     return list(
         db.execute(
             select(TaskBaseline)
             .where(TaskBaseline.project_id == project_id)
             .order_by(TaskBaseline.baseline_version.desc(), TaskBaseline.id)
+            .limit(limit)
         )
         .scalars()
         .all()
@@ -421,7 +422,9 @@ def close_check(db: Session, ctx: ScopeContext, project_id: int) -> dict:
     blockers: list[str] = []
     unfinished = int(
         db.execute(
-            select(func.count(Task.id)).where(Task.project_id == project.id, Task.status != "DONE")
+            select(func.count(Task.id)).where(
+                Task.project_id == project.id, Task.status.notin_(["DONE", "CANCELED"])
+            )
         ).scalar_one()
     )
     if unfinished:
@@ -627,12 +630,29 @@ def project_deviation(db: Session, ctx: ScopeContext, project_id: int) -> dict:
     tasks = list(db.execute(select(Task).where(Task.project_id == project.id)).scalars().all())
     total = len(tasks)
     done = sum(1 for task in tasks if task.status == "DONE")
-    delayed = sum(1 for task in tasks if task.plan_end and task.plan_end < today() and task.status != "DONE")
-    baseline = db.execute(
-        select(TaskBaseline)
-        .where(TaskBaseline.project_id == project.id)
-        .order_by(TaskBaseline.baseline_version.desc())
-    ).scalars().all()
+    delayed = sum(
+        1
+        for task in tasks
+        if task.plan_end and task.plan_end < today() and task.status not in {"DONE", "CANCELED"}
+    )
+    # 偏差只对照最新基线版本，避免多轮基线变更被重复累加。
+    latest_version = db.execute(
+        select(func.max(TaskBaseline.baseline_version)).where(TaskBaseline.project_id == project.id)
+    ).scalar_one_or_none()
+    baseline: list[TaskBaseline] = []
+    if latest_version:
+        baseline = list(
+            db.execute(
+                select(TaskBaseline)
+                .where(
+                    TaskBaseline.project_id == project.id,
+                    TaskBaseline.baseline_version == latest_version,
+                )
+                .order_by(TaskBaseline.id)
+            )
+            .scalars()
+            .all()
+        )
     baseline_count = len(baseline)
     planned_hours = sum((Decimal(str(item.estimate_hours or 0)) for item in baseline), Decimal("0"))
     actual_hours = sum((Decimal(str(task.actual_hours or 0)) for task in tasks), Decimal("0"))
@@ -645,7 +665,7 @@ def project_deviation(db: Session, ctx: ScopeContext, project_id: int) -> dict:
         "task_done": done,
         "task_delayed": delayed,
         "completion_rate": round(done / total, 4) if total else 0.0,
-        "baseline_version": baseline[0].baseline_version if baseline else 0,
+        "baseline_version": int(latest_version or 0),
         "baseline_tasks": baseline_count,
         "planned_hours": planned_hours,
         "actual_hours": actual_hours,

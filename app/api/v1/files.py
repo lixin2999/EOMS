@@ -7,6 +7,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
+from starlette.background import BackgroundTask
 
 from app.api.response import ok
 from app.api.serializers import file_brief
@@ -139,8 +140,22 @@ def get_file(file_id: int, db: DbSession, ctx: Scope) -> dict:
     return ok(_row(_get_file(db, ctx, file_id)))
 
 
+def _close_quietly(handle) -> None:
+    try:
+        handle.close()
+    except Exception:  # noqa: BLE001 - 释放连接失败不影响响应
+        pass
+
+
 def _stream(item: SysFile) -> StreamingResponse:
     handle = storage.open_object(item.path)
+    state = {"closed": False}
+
+    def _close_once() -> None:
+        if state["closed"]:
+            return
+        state["closed"] = True
+        _close_quietly(handle)
 
     def iterator():
         try:
@@ -150,7 +165,9 @@ def _stream(item: SysFile) -> StreamingResponse:
                     break
                 yield chunk
         finally:
-            handle.close()
+            # 不在生成器内直接关闭：客户端断开时清理交给 BackgroundTask，
+            # 避免与响应完成重复关闭同一连接。
+            _close_once()
 
     filename = quote(item.name or "download")
     return StreamingResponse(
@@ -160,6 +177,7 @@ def _stream(item: SysFile) -> StreamingResponse:
             "Content-Disposition": f"attachment; filename=file; filename*=UTF-8''{filename}",
             "Content-Length": str(item.size or 0),
         },
+        background=BackgroundTask(_close_once),
     )
 
 

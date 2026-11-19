@@ -14,7 +14,7 @@ from app.models.approval import Leave, LeaveBalance
 from app.models.enums import LeaveStatus, LeaveType
 from app.models.iam import User
 from app.models.workflow import WorkflowInstance
-from app.services.common import company_code
+from app.services.common import claim_version, company_code
 from app.services.iam.audit import snapshot, write_audit
 from app.services.iam.notification import notify_with_email
 from app.utils.datetime import now
@@ -202,10 +202,15 @@ def submit_leave(db: Session, user: User, ctx: ScopeContext, leave_id: int) -> L
         balance = _balance(db, user, leave.type, leave.start_time.year)
         if balance is None or Decimal(str(balance.remain)) < Decimal(str(leave.duration)):
             raise BusinessRuleError("可用假期余额不足")
+    claim_version(
+        db,
+        Leave,
+        leave,
+        allowed_status={LeaveStatus.DRAFT.value, LeaveStatus.REJECTED.value},
+    )
     leave.status = LeaveStatus.RUNNING.value
     leave.submitted_at = now()
     leave.workflow_version = int(leave.workflow_version or 0) + 1
-    leave.version = int(leave.version or 1) + 1
     db.flush()
     instance = engine.start_workflow(
         db,

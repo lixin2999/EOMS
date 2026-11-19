@@ -207,6 +207,9 @@ router.beforeEach(async (to) => {
   const auth = useAuthStore()
   const meta = useMetaStore()
 
+  // 令牌在 HttpOnly Cookie 中，首次导航必须向后端确认会话，再判断权限。
+  await auth.bootstrap()
+
   if (to.meta.public) {
     if (to.path === '/login' && auth.profile && !auth.firstLogin) return '/dashboard'
     return true

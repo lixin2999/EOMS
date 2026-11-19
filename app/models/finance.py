@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Date, DateTime, Index, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, DomainMixin, IdMixin, TimestampMixin, VersionMixin
@@ -77,6 +77,14 @@ class Payment(Base, IdMixin, DomainMixin, TimestampMixin, VersionMixin):
     __table_args__ = (
         UniqueConstraint("no", name="uq_fin_payment_no"),
         Index("ix_fin_payment_status_date", "status", "pay_date"),
+        # 同一报销单在「待付款/已付款」状态下只允许一张付款单，防止并发重复支付。
+        Index(
+            "uq_fin_payment_expense_active",
+            "expense_id",
+            unique=True,
+            postgresql_where=text("expense_id IS NOT NULL AND status IN ('PENDING', 'PAID')"),
+            sqlite_where=text("expense_id IS NOT NULL AND status IN ('PENDING', 'PAID')"),
+        ),
     )
 
     no: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -93,6 +101,39 @@ class Payment(Base, IdMixin, DomainMixin, TimestampMixin, VersionMixin):
     remark: Mapped[str | None] = mapped_column(String(1000))
     installments_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     approved_by: Mapped[int | None] = mapped_column(Integer)
+
+
+class PendingCost(Base, IdMixin):
+    """期间已关账时暂存的成本归集请求，开账后由任务补记到 ``fin_cost_record``。"""
+
+    __tablename__ = "fin_pending_cost"
+    __table_args__ = (
+        UniqueConstraint("record_key", name="uq_fin_pending_cost_record_key"),
+        Index("ix_fin_pending_cost_company_status", "company_id", "status", "period"),
+    )
+
+    record_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    company_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    dept_id: Mapped[int | None] = mapped_column(Integer)
+    project_id: Mapped[int | None] = mapped_column(Integer)
+    biz_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    biz_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    account_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=0, nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), default="CNY", nullable=False)
+    occur_date: Mapped[date] = mapped_column(Date, nullable=False)
+    period: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    vendor_id: Mapped[int | None] = mapped_column(Integer)
+    contract_id: Mapped[int | None] = mapped_column(Integer)
+    applicant_id: Mapped[int | None] = mapped_column(Integer)
+    source_no: Mapped[str | None] = mapped_column(String(64))
+    cash_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255))
+    cost_record_id: Mapped[int | None] = mapped_column(Integer)
+    retries: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
 
 
 class Receipt(Base, IdMixin, DomainMixin, TimestampMixin):

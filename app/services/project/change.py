@@ -56,10 +56,15 @@ def _validate_after(change_type: str, after: dict[str, Any]) -> dict[str, Any]:
     raise BusinessRuleError("变更类型非法")
 
 
-def list_changes(db: Session, ctx: ScopeContext, project_id: int) -> list[Change]:
+def list_changes(db: Session, ctx: ScopeContext, project_id: int, limit: int = 200) -> list[Change]:
     get_project(db, ctx, project_id)
     return list(
-        db.execute(select(Change).where(Change.project_id == project_id).order_by(Change.id.desc()))
+        db.execute(
+            select(Change)
+            .where(Change.project_id == project_id)
+            .order_by(Change.id.desc())
+            .limit(limit)
+        )
         .scalars()
         .all()
     )
@@ -183,7 +188,17 @@ def on_change_rejected(db: Session, instance: WorkflowInstance) -> None:
 
 
 def on_change_withdrawn(db: Session, instance: WorkflowInstance) -> None:
+    """撤回后变更单置为已取消，避免「退回 DRAFT 后又无流程实例」的悬挂状态。"""
     change = db.get(Change, instance.biz_id)
     if change and change.status == "RUNNING":
-        change.status = "DRAFT"
+        change.status = "CANCELED"
         db.flush()
+        write_audit(
+            db,
+            user=None,
+            action="PROJECT_CHANGE_CANCELED",
+            target_type="PROJECT_CHANGE",
+            target_id=change.id,
+            company_id=change.company_id,
+            after={"status": "CANCELED", "instance_id": instance.id},
+        )

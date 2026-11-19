@@ -10,7 +10,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.scope import ScopeContext
@@ -448,6 +448,17 @@ def vendor_spend_report(
     return {"start": start, "end": end, "total": float(total), "items": items}
 
 
+def _empty_bucket() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "approved": 0,
+        "rejected": 0,
+        "hours": Decimal("0"),
+        "overdue": 0,
+        "tasks": 0,
+    }
+
+
 def approval_efficiency(
     db: Session,
     ctx: ScopeContext,
@@ -455,83 +466,105 @@ def approval_efficiency(
     start: str | None = None,
     end: str | None = None,
 ) -> dict:
+    """审批效率：实例与任务均在 SQL 侧聚合，避免全量载入 ORM 对象。"""
     start, end = _month_range(start, end)
-    stmt = select(WorkflowInstance).where(
-        WorkflowInstance.start_at >= date(int(start[:4]), int(start[5:7]), 1)
-    )
-    stmt = _scope(stmt, ctx, WorkflowInstance)
-    instances = list(db.execute(stmt).scalars().all())
-    instances = [
-        item
-        for item in instances
-        if item.start_at.strftime("%Y-%m") <= end
+    start_date = date(int(start[:4]), int(start[5:7]), 1)
+    end_year, end_month = int(end[:4]), int(end[5:7])
+    end_exclusive = date(end_year + 1, 1, 1) if end_month == 12 else date(end_year, end_month + 1, 1)
+    range_cond = [
+        WorkflowInstance.start_at >= start_date,
+        WorkflowInstance.start_at < end_exclusive,
     ]
-    instance_ids = [item.id for item in instances]
-    tasks = (
-        list(
-            db.execute(select(WorkflowTask).where(WorkflowTask.instance_id.in_(instance_ids))).scalars().all()
-        )
-        if instance_ids
-        else []
-    )
     now_ts = now()
-    by_type: dict[str, dict] = {}
-    for instance in instances:
-        bucket = by_type.setdefault(
-            instance.biz_type,
-            {
-                "biz_type": instance.biz_type,
-                "total": 0,
-                "approved": 0,
-                "rejected": 0,
-                "hours": Decimal("0"),
-                "overdue": 0,
-            },
+
+    instance_stmt = (
+        select(
+            WorkflowInstance.biz_type,
+            WorkflowInstance.status,
+            func.count(WorkflowInstance.id),
+            func.coalesce(func.sum(_hours_expr(db)), 0),
         )
-        bucket["total"] += 1
-        if instance.status == "APPROVED":
-            bucket["approved"] += 1
-        elif instance.status == "REJECTED":
-            bucket["rejected"] += 1
-        if instance.finish_at:
-            delta = instance.finish_at - instance.start_at
-            bucket["hours"] += Decimal(str(delta.total_seconds())) / Decimal(3600)
-    task_by_instance: dict[int, list[WorkflowTask]] = {}
-    for task in tasks:
-        task_by_instance.setdefault(task.instance_id, []).append(task)
-    instance_type = {item.id: item.biz_type for item in instances}
-    for task in tasks:
-        overdue_pending = task.status == "PENDING" and task.due_at and task.due_at < now_ts
-        overdue_done = task.finish_at and task.due_at and task.finish_at > task.due_at
-        if overdue_pending or overdue_done:
-            type_bucket = by_type.get(instance_type.get(task.instance_id, ""))
-            if type_bucket:
-                type_bucket["overdue"] += 1
+        .where(*range_cond)
+        .group_by(WorkflowInstance.biz_type, WorkflowInstance.status)
+    )
+    instance_stmt = _scope(instance_stmt, ctx, WorkflowInstance)
+
+    # 超时判定：待办已过期，或已办但完成时间晚于截止时间。
+    overdue_expr = case(
+        (
+            or_(
+                (WorkflowTask.status == "PENDING")
+                & WorkflowTask.due_at.is_not(None)
+                & (WorkflowTask.due_at < now_ts),
+                WorkflowTask.due_at.is_not(None)
+                & WorkflowTask.finish_at.is_not(None)
+                & (WorkflowTask.finish_at > WorkflowTask.due_at),
+            ),
+            1,
+        ),
+        else_=0,
+    )
+    task_stmt = (
+        select(
+            WorkflowInstance.biz_type,
+            func.count(WorkflowTask.id),
+            func.coalesce(func.sum(overdue_expr), 0),
+        )
+        .join(WorkflowInstance, WorkflowInstance.id == WorkflowTask.instance_id)
+        .where(*range_cond)
+        .group_by(WorkflowInstance.biz_type)
+    )
+    task_stmt = _scope(task_stmt, ctx, WorkflowInstance)
+
+    buckets: dict[str, dict] = {}
+    for biz_type, status, count, hours_sum in db.execute(instance_stmt).all():
+        bucket = buckets.setdefault(biz_type, _empty_bucket())
+        bucket["total"] += int(count or 0)
+        if status == "APPROVED":
+            bucket["approved"] = int(count or 0)
+        elif status == "REJECTED":
+            bucket["rejected"] = int(count or 0)
+        bucket["hours"] += Decimal(str(hours_sum or 0))
+    for biz_type, task_count, overdue_count in db.execute(task_stmt).all():
+        bucket = buckets.setdefault(biz_type, _empty_bucket())
+        bucket["tasks"] = int(task_count or 0)
+        bucket["overdue"] = int(overdue_count or 0)
+
     items = []
-    for bucket in by_type.values():
+    for biz_type, bucket in buckets.items():
         finished = bucket["approved"] + bucket["rejected"]
-        total = bucket["total"]
+        # 超时率分母取该类型任务数，避免不同业务类型的任务量差异扭曲口径。
+        tasks_count = bucket["tasks"]
         items.append(
             {
-                "biz_type": bucket["biz_type"],
-                "total": total,
+                "biz_type": biz_type,
+                "total": bucket["total"],
                 "approved": bucket["approved"],
                 "rejected": bucket["rejected"],
                 "avg_hours": round(float(bucket["hours"] / finished), 2) if finished else 0.0,
                 "reject_rate": round(bucket["rejected"] / finished * 100, 2) if finished else 0.0,
                 "overdue_tasks": bucket["overdue"],
-                "overdue_rate": round(bucket["overdue"] / max(len(tasks), 1) * 100, 2),
+                "overdue_rate": round(bucket["overdue"] / tasks_count * 100, 2) if tasks_count else 0.0,
             }
         )
     items.sort(key=lambda item: item["total"], reverse=True)
+    finished_total = sum(item["approved"] + item["rejected"] for item in items)
+    weighted_hours = sum(
+        item["avg_hours"] * (item["approved"] + item["rejected"]) for item in items
+    )
     return {
         "start": start,
         "end": end,
-        "total_instances": len(instances),
-        "avg_hours": round(
-            sum(item["avg_hours"] * max(item["approved"] + item["rejected"], 0) for item in items)
-            / max(sum(item["approved"] + item["rejected"] for item in items), 1),
-            2,
-        ),
+        "total_instances": sum(item["total"] for item in items),
+        "avg_hours": round(weighted_hours / finished_total, 2) if finished_total else 0.0,
         "items": items,
     }
+
+
+def _hours_expr(db: Session) -> Any:
+    """审批耗时（小时）的方言表达式：PG 用 epoch 差，SQLite 用 julianday 差。"""
+    if db.get_bind().dialect.name == "sqlite":
+        return (
+            func.julianday(WorkflowInstance.finish_at) - func.julianday(WorkflowInstance.start_at)
+        ) * 24
+    return func.extract("epoch", WorkflowInstance.finish_at - WorkflowInstance.start_at) / 3600

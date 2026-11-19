@@ -29,7 +29,7 @@
 
 ## 2. 功能范围
 
-- **认证与权限**：JWT（access 30min / refresh 7d）+ Redis 黑名单、Argon2 密码、图形验证码、登录失败锁定、并发会话上限、首登/过期强制改密；RBAC + 数据域（`ALL / COMPANY / DEPT / DEPT_TREE / PROJECT / SELF`），多角色取并集且收敛到公司边界，PostgreSQL RLS 兜底。
+- **认证与权限**：JWT 双令牌（access 30min / refresh 3d），浏览器会话通过 HttpOnly Cookie（`eoms_at` / `eoms_rt`）下发并配合双提交 CSRF（`eoms_csrf` + `X-CSRF-Token`），脚本/第三方集成仍可用 `Authorization: Bearer`；Redis 黑名单与刷新令牌原子轮换/重放检测，Argon2 密码、图形验证码、登录失败锁定、并发会话上限、首登/过期强制改密；RBAC + 数据域（`ALL / COMPANY / DEPT / DEPT_TREE / PROJECT / SELF`），多角色取并集且收敛到公司边界，PostgreSQL RLS 兜底。
 - **审批中心**：费用报销、请假、公文发文；四级可配置流程（线性四级 + 金额阈值升级 + 节点内加签/会签），支持同意/驳回/转办/加签/撤回/催办/抄送，DB 行锁 + Redis 分布式锁保证并发安全。
 - **项目管理**：立项、变更、验收、结项归档，里程碑与进度，项目成员与数据域联动，版本乐观锁。
 - **供应商与合同**：供应商准入/评价/黑名单、合同签订与续签/终止、敏感字段加密与脱敏。
@@ -317,7 +317,9 @@ docker compose restart api worker beat
 | 上传文件失败 | 本地确认 `EOMS_STORAGE_BACKEND=local` 且 `.data/storage` 可写；容器确认 MinIO 与 `minio-init` 成功 |
 | 异步任务不执行 | 本地可设 `EOMS_CELERY_ALWAYS_EAGER=true`；容器检查 `redis` 与 `worker` 日志 |
 | 登录提示锁定 | 等待 `EOMS_LOGIN_LOCK_MINUTES`，或清理 Redis 中登录失败计数 |
-| 前端 401 循环 | 清除浏览器本地 token；确认后端时间与 `EOMS_TIMEZONE` 一致 |
+| 前端 401 循环 | 清除浏览器 Cookie（`eoms_at` / `eoms_rt` / `eoms_csrf`）后重新登录；确认后端时间与 `EOMS_TIMEZONE` 一致 |
+| 写操作返回 403「CSRF 校验失败」 | 前端需带 `X-CSRF-Token`（值取自 `eoms_csrf` Cookie）；跨域部署检查 CORS 是否放行该请求头 |
+| HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
 
 ## 13. 许可

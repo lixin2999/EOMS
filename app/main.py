@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import time
 from contextlib import asynccontextmanager
@@ -35,6 +36,13 @@ logger = get_logger("eoms.main")
 
 SKIP_RATE_LIMIT = {"/healthz", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json", "/"}
 IDEMPOTENT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# 建立会话前无凭证可用：登录/刷新/验证码不参与 CSRF 校验（避免旧 Cookie 阻断重新登录）
+CSRF_EXEMPT = {
+    f"{settings.api_prefix}/auth/login",
+    f"{settings.api_prefix}/auth/refresh",
+    f"{settings.api_prefix}/auth/captcha",
+}
 
 
 def _client_ip(request: Request) -> str:
@@ -42,6 +50,14 @@ def _client_ip(request: Request) -> str:
     if forwarded:
         return forwarded.split(",")[0].strip()[:64]
     return request.client.host if request.client else ""
+
+
+def _access_token(request: Request) -> str:
+    """取访问令牌：Authorization 头优先，其次 HttpOnly Cookie（浏览器会话）。"""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return request.cookies.get(settings.access_cookie_name) or ""
 
 
 class ContextMiddleware(BaseHTTPMiddleware):
@@ -55,10 +71,10 @@ class ContextMiddleware(BaseHTTPMiddleware):
         name_token = username_var.set("")
         request.state.trace_id = trace_id
         request.state.client_ip = ip
-        token = request.headers.get("authorization", "")
-        if token.lower().startswith("bearer "):
+        token = _access_token(request)
+        if token:
             try:
-                payload = decode_token(token[7:].strip(), "access")
+                payload = decode_token(token, "access")
                 user_id_var.set(int(payload.get("sub", "0")))
                 username_var.set(str(payload.get("username") or ""))
             except Exception:  # noqa: BLE001 - 认证失败交由依赖处理
@@ -103,16 +119,19 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """令牌桶限流；登录接口使用更严格的独立桶。"""
+    """令牌桶限流：登录、文件下载、其它接口使用独立桶，避免大文件下载抢占配额。"""
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path in SKIP_RATE_LIMIT or path.startswith(settings.api_prefix + "/files/"):
+        if path in SKIP_RATE_LIMIT:
             return await call_next(request)
         ip = _client_ip(request) or "unknown"
-        is_login = path == f"{settings.api_prefix}/auth/login"
-        limit = settings.login_rate_limit_per_minute if is_login else settings.rate_limit_per_minute
-        bucket = f"{'login' if is_login else 'api'}:{ip}"
+        if path == f"{settings.api_prefix}/auth/login":
+            bucket, limit = f"login:{ip}", settings.login_rate_limit_per_minute
+        elif path.startswith(f"{settings.api_prefix}/files/"):
+            bucket, limit = f"files:{ip}", settings.files_rate_limit_per_minute
+        else:
+            bucket, limit = f"api:{ip}", settings.rate_limit_per_minute
         allowed, remaining = cache.allow(bucket, limit)
         if not allowed:
             return JSONResponse(
@@ -125,6 +144,35 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class CsrfMiddleware(BaseHTTPMiddleware):
+    """Cookie 会话的 CSRF 防护：写操作需带与 Cookie 一致的 ``X-CSRF-Token``。
+
+    仅对「无 Authorization 头 + 存在访问 Cookie」的浏览器会话生效；
+    使用 Bearer 的脚本/测试不受影响。
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if (
+            request.method not in CSRF_METHODS
+            or not path.startswith(settings.api_prefix)
+            or path in CSRF_EXEMPT
+        ):
+            return await call_next(request)
+        has_bearer = request.headers.get("authorization", "").lower().startswith("bearer ")
+        has_cookie = bool(request.cookies.get(settings.access_cookie_name))
+        if not has_cookie or has_bearer:
+            return await call_next(request)
+        cookie_token = request.cookies.get(settings.csrf_cookie_name) or ""
+        header_token = request.headers.get("x-csrf-token") or ""
+        if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
+            return JSONResponse(
+                status_code=403,
+                content=error_body(403, "CSRF 校验失败，请刷新页面重试"),
+            )
+        return await call_next(request)
+
+
 class IdempotencyMiddleware(BaseHTTPMiddleware):
     """幂等键：写操作携带 Idempotency-Key 时返回首次成功响应。"""
 
@@ -134,11 +182,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         key = (request.headers.get("idempotency-key") or "").strip()
         if not key or len(key) > 128:
             return await call_next(request)
-        auth = request.headers.get("authorization", "")
-        if not auth.lower().startswith("bearer "):
+        token = _access_token(request)
+        if not token:
             return await call_next(request)
         try:
-            payload = decode_token(auth[7:].strip(), "access")
+            payload = decode_token(token, "access")
             company_id = int(payload.get("company_id", 0))
             user_id = int(payload.get("sub", 0))
         except Exception:  # noqa: BLE001
@@ -151,6 +199,20 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 content=cached["body"],
                 headers={"Idempotency-Replayed": "true"},
             )
+        # 同一幂等键并发请求互斥：抢占失败说明首次请求仍在处理，提示稍后重试。
+        lock_key = f"idem-lock:{cache_key}"
+        if not cache.set_nx(lock_key, "1", 30):
+            return JSONResponse(
+                status_code=409, content=error_body(1008, "相同请求正在处理中，请稍后重试")
+            )
+        try:
+            return await self._forward(request, call_next, cache_key, company_id, user_id, key)
+        finally:
+            cache.delete(lock_key)
+
+    async def _forward(
+        self, request: Request, call_next, cache_key: str, company_id: int, user_id: int, key: str
+    ) -> Response:
         response = await call_next(request)
         chunks = [chunk async for chunk in response.body_iterator]
         raw = b"".join(chunks)
@@ -186,6 +248,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 def _persist_idempotency(
     company_id: int, user_id: int, key: str, request: Request, status_code: int, body: Any
 ) -> None:
+    """落库幂等记录。
+
+    中间件在请求事务之外，无法共享主事务，因此独立 ``SessionLocal``；
+    落库为旁路审计：主流程幂等以保证缓存为准，重复键仅回滚本会话。
+    """
     from sqlalchemy.exc import IntegrityError
 
     from app.models.platform import IdempotencyKey
@@ -240,19 +307,22 @@ app = FastAPI(
 if settings.trusted_host_list and settings.trusted_host_list != ["*"]:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_host_list)
 
+# add_middleware 后注册者居外层：CORS 必须在最外层，使限流/幂等/CSRF 拒绝响应也带 CORS 头。
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(IdempotencyMiddleware)
+# CSRF 依赖 ContextMiddleware 先绑定 trace_id，故必须注册在它之后（更内层）。
+app.add_middleware(CsrfMiddleware)
+app.add_middleware(ContextMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Trace-ID"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key", "X-Trace-ID", "X-CSRF-Token"],
     expose_headers=["X-Trace-ID", "X-RateLimit-Remaining", "Idempotency-Replayed"],
     max_age=600,
 )
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(IdempotencyMiddleware)
-app.add_middleware(ContextMiddleware)
 
 register_exception_handlers(app)
 app.include_router(api_router, prefix=settings.api_prefix)

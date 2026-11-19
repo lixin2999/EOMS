@@ -47,9 +47,23 @@ def budget_overview(db: Session, project_id: int, year: int) -> list[dict]:
         .scalars()
         .all()
     )
+    if not rows:
+        return []
+    # 一次性聚合各科目实际成本，避免按科目逐条查询（N+1）
+    actual_rows = db.execute(
+        select(CostRecord.account_code, func.coalesce(func.sum(CostRecord.amount), 0))
+        .where(
+            CostRecord.project_id == project_id,
+            CostRecord.period >= f"{year}-01",
+            CostRecord.period <= f"{year}-12",
+            CostRecord.status == "ACTIVE",
+        )
+        .group_by(CostRecord.account_code)
+    ).all()
+    actual_map = {str(code): Decimal(str(total or 0)) for code, total in actual_rows}
     result = []
     for row in rows:
-        actual = actual_amount(db, project_id, row.account_code, year)
+        actual = actual_map.get(str(row.account_code), ZERO)
         budget = Decimal(str(row.amount))
         rate = float(actual / budget) if budget > 0 else 0.0
         result.append(

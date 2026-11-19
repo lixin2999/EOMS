@@ -17,6 +17,8 @@ x-logging: &default-logging
 x-backend-environment: &backend-environment
   EOMS_ENV: ${EOMS_ENV:-prod}
   EOMS_DEBUG: "false"
+  EOMS_SECRET_KEY: ${EOMS_SECRET_KEY:?EOMS_SECRET_KEY 必须在 .env 中设置}
+  EOMS_AES_KEY: ${EOMS_AES_KEY:?EOMS_AES_KEY 必须在 .env 中设置}
   EOMS_DATABASE_URL: postgresql+psycopg://eoms:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 必须在 .env 中设置}@db:5432/eoms
   EOMS_REDIS_URL: redis://redis:6379/0
   EOMS_CELERY_BROKER_URL: redis://redis:6379/1

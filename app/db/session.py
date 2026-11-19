@@ -58,6 +58,16 @@ def _set_sqlite_pragma(dbapi_connection, connection_record):  # noqa: ANN001
         cursor.close()
 
 
+def _release_locks(db: Session) -> None:
+    """事务收尾后释放会话登记的事务级锁（见 ``cache.hold``）。"""
+    from app.core.cache import cache
+
+    try:
+        cache.release_held(db)
+    except Exception as exc:  # noqa: BLE001 - 释放失败只能依赖 TTL 自然过期
+        logger.warning("释放事务级锁失败: %s", exc)
+
+
 def get_db() -> Iterator[Session]:
     """请求级事务：统一提交/回滚，保证审批与业务回调的本地一致性。"""
     db = SessionLocal()
@@ -69,6 +79,7 @@ def get_db() -> Iterator[Session]:
         db.rollback()
         raise
     finally:
+        _release_locks(db)
         db.close()
 
 
@@ -88,6 +99,7 @@ def session_scope() -> Iterator[Session]:
         db.rollback()
         raise
     finally:
+        _release_locks(db)
         db.close()
 
 
