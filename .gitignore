@@ -114,6 +114,3 @@ docker-compose.override.yml
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# 文档目录
-docs/

@@ -213,6 +213,8 @@ sudo bash deploy/install.sh --minimal
 ```
 
 > 重复执行安装脚本是安全的：已有 `.env` 的密钥与数据不会被重置，仅重建镜像并滚动启动。
+>
+> V1.2.2 起，pip 自身升级与项目依赖安装统一使用 `PIP_INDEX_URL`；国内网络请使用 `--cn-mirror`，避免 pip 升级阶段绕过镜像源直连 PyPI。
 
 ### 7.2 手动部署
 
@@ -245,6 +247,12 @@ python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
 docker compose build
 docker compose up -d
 docker compose ps
+```
+
+后端构建默认使用 `https://pypi.org/simple`，可在 `.env` 中通过 `PIP_INDEX_URL` 修改。pip 自身升级与项目依赖均使用该地址，并启用 120 秒读取超时、5 次重试和 BuildKit pip 缓存。若日志出现 `files.pythonhosted.org` 读取超时，国内服务器可执行：
+
+```bash
+sudo bash deploy/install.sh --skip-docker-install --cn-mirror
 ```
 
 首次启动可选初始化演示数据：
@@ -385,7 +393,15 @@ docker compose restart api worker beat
 | 写操作返回 403「CSRF 校验失败」 | 前端需带 `X-CSRF-Token`（值取自 `eoms_csrf` Cookie）；跨域部署检查 CORS 是否放行该请求头 |
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
+| Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
 
-## 13. 许可
+## 13. 版本维护
+
+- 每次功能开发、功能变更、问题修复或功能完善，都必须在 `release.md` 新增独立版本条目，并在版本索引顶部登记。
+- 功能新增或功能变更默认递增第二位版本号，并将第三位修订号归零。
+- 问题修复或功能完善默认递增第三位修订号。
+- 同一次发布同时包含多类变更时，按较高优先级确定版本号；详细格式与记录要求见 [`release.md`](release.md)。
+
+## 14. 许可
 
 Proprietary. 未经授权不得分发。

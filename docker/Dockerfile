@@ -5,7 +5,8 @@
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS builder
 
-ENV PIP_NO_CACHE_DIR=1 \
+ENV PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONDONTWRITEBYTECODE=1
 
@@ -23,7 +24,8 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 COPY pyproject.toml README.md ./
 COPY app ./app
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip && pip install --index-url "$PIP_INDEX_URL" .
+    python -m pip install --upgrade --index-url "$PIP_INDEX_URL" pip \
+    && python -m pip install --index-url "$PIP_INDEX_URL" .
 
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
