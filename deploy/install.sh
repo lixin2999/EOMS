@@ -251,23 +251,91 @@ install_docker() {
 
 configure_docker_mirror() {
     (( CN_MIRROR )) || return 0
-    if [[ -f /etc/docker/daemon.json ]]; then
-        warn "检测到 /etc/docker/daemon.json，已跳过镜像加速配置（如需加速请手动合并 registry-mirrors）"
-        return 0
-    fi
+
+    local daemon_config="/etc/docker/daemon.json"
+    local mirrors=(
+        "https://docker.m.daocloud.io"
+        "https://docker.1ms.run"
+        "https://dockerproxy.net"
+    )
+    local merge_result
+
     log "配置 Docker 镜像加速..."
     mkdir -p /etc/docker
-    cat > /etc/docker/daemon.json <<'JSON'
-{
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io",
-    "https://docker.1ms.run",
-    "https://dockerproxy.net"
-  ]
-}
-JSON
+    if ! merge_result="$(python3 - "$daemon_config" "${mirrors[@]}" <<'PY'
+import json
+import os
+import shutil
+import stat
+import sys
+import tempfile
+from datetime import datetime
+
+path = sys.argv[1]
+desired = sys.argv[2:]
+existed = os.path.exists(path)
+if existed:
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+else:
+    data = {}
+
+if not isinstance(data, dict):
+    raise SystemExit("daemon.json 顶层必须是 JSON 对象")
+
+current = data.get("registry-mirrors", [])
+if not isinstance(current, list) or not all(isinstance(item, str) for item in current):
+    raise SystemExit("daemon.json 中的 registry-mirrors 必须是字符串数组")
+
+merged = list(current)
+for mirror in desired:
+    if mirror not in merged:
+        merged.append(mirror)
+
+if merged == current:
+    print("unchanged")
+    raise SystemExit(0)
+
+backup = ""
+if existed:
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    backup = f"{path}.eoms-backup-{stamp}"
+    shutil.copy2(path, backup)
+
+data["registry-mirrors"] = merged
+mode = stat.S_IMODE(os.stat(path).st_mode) if existed else 0o644
+fd, tmp_path = tempfile.mkstemp(prefix=".daemon.json.", dir=os.path.dirname(path), text=True)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    os.chmod(tmp_path, mode)
+    os.replace(tmp_path, path)
+except Exception:
+    try:
+        os.unlink(tmp_path)
+    except FileNotFoundError:
+        pass
+    raise
+
+print(backup or "created")
+PY
+)"; then
+        die "合并 Docker 镜像加速配置失败，请检查 $daemon_config 是否为合法 JSON"
+    fi
+
+    if [[ "$merge_result" == "unchanged" ]]; then
+        ok "Docker 镜像加速已配置，无需重启"
+        return 0
+    fi
+
+    if [[ "$merge_result" != "created" ]]; then
+        log "原配置已备份：$merge_result"
+    fi
     systemctl restart docker
     sleep 2
+    docker info >/dev/null 2>&1 || die "Docker 重启失败，请检查 $daemon_config 与 systemctl status docker"
+    ok "Docker 镜像加速配置完成"
 }
 
 if (( SKIP_DOCKER )); then
@@ -278,11 +346,11 @@ else
     install_docker
 fi
 
-# Docker 已安装时同样需要应用 --cn-mirror 的镜像加速配置
-configure_docker_mirror
-
 command -v curl >/dev/null 2>&1 || apt_install curl ca-certificates
 command -v python3 >/dev/null 2>&1 || apt_install python3
+
+# Docker 已安装时同样需要应用 --cn-mirror 的镜像加速配置
+configure_docker_mirror
 
 if [[ -n ${SUDO_USER:-} && ${SUDO_USER} != "root" ]]; then
     if ! id -nG "$SUDO_USER" | grep -qw docker; then

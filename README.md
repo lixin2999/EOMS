@@ -217,6 +217,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.2 起，pip 自身升级与项目依赖安装统一使用 `PIP_INDEX_URL`；国内网络请使用 `--cn-mirror`，避免 pip 升级阶段绕过镜像源直连 PyPI。
 >
 > V1.2.3 起，`--skip-docker-install` 与 `--cn-mirror` 可同时使用；脚本只跳过 Docker 安装，仍会配置 Docker 镜像加速。
+>
+> V1.2.4 起，已有 `/etc/docker/daemon.json` 时会安全合并 `registry-mirrors`，保留其他配置并自动备份。
 
 ### 7.2 手动部署
 
@@ -396,7 +398,7 @@ docker compose restart api worker beat
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
-| 启动时拉取 `minio/mc` 等镜像提示 `registry-1.docker.io` 超时 | 使用 V1.2.3 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
+| 启动时拉取 `minio/mc` 等镜像提示 `registry-1.docker.io` 超时 | 使用 V1.2.4 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`；已有 daemon.json 会自动合并并备份 |
 
 ## 13. 版本维护
 

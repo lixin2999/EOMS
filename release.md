@@ -29,6 +29,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.4 | 2026-11-25 | 问题修复 | 支持安全合并现有 daemon.json 的 registry-mirrors，保留原配置、备份并重启 Docker |
 | V1.2.3 | 2026-11-25 | 问题修复 | 修复跳过 Docker 安装时未配置镜像加速，导致 MinIO 等镜像从 Docker Hub 拉取超时 |
 | V1.2.2 | 2026-11-25 | 问题修复 | 修复 Docker 构建 pip 升级绕过镜像源与下载超时，统一依赖源并启用重试和缓存 |
 | V1.2.1 | 2026-11-21 | 问题修复 | 一键部署收尾完善：端口变更同步 origin、IPv6 地址、帮助免 Docker、参数校验与依赖检测 |
@@ -489,3 +490,52 @@
 
 - `README.md`：补充参数组合说明与 Docker Hub 拉取超时排障。
 - `docs/部署文档.md`：适用版本更新为 V1.2.3，补充已安装 Docker 场景的镜像加速说明。
+
+---
+
+### V1.2.4（2026-11-25）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+完善 Docker 镜像加速配置：服务器已有 `/etc/docker/daemon.json` 时不再直接跳过，而是安全合并 `registry-mirrors`。原有其他配置与已有镜像地址均保留，新增地址自动去重，修改前生成带时间戳的备份，写入后重启并检查 Docker 服务。
+
+**问题修复**
+
+- **已有 daemon.json 导致加速不生效**：原实现检测到文件存在就退出，国内服务器仍直连 Docker Hub。现使用 Python 解析并合并 JSON，不再跳过现有配置。
+- **配置覆盖风险**：新实现只更新 `registry-mirrors` 字段，保留其他 Docker daemon 配置、文件权限与已有镜像地址；非法 JSON 或字段类型错误时终止且不覆盖原文件。
+
+**变更/优化**
+
+- 合并前自动备份为 `/etc/docker/daemon.json.eoms-backup-时间戳`。
+- 使用临时文件原子替换，避免写入中断产生半截配置。
+- 配置未变化时跳过重启；配置变化后执行 `systemctl restart docker` 并通过 `docker info` 验证服务恢复。
+- 将 `python3` 依赖检查前移，确保执行 JSON 合并前可用。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+1. 同步更新 `deploy/install.sh`。
+2. 在服务器重新执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`。
+3. 脚本会合并现有 `/etc/docker/daemon.json`、输出备份路径、重启 Docker，并继续构建或拉取镜像。
+4. 如合并失败，检查终端错误并修复 `daemon.json`；原文件不会被覆盖，备份文件可用于人工恢复。
+
+**验证情况**
+
+- 根据部署日志确认脚本已进入镜像加速流程，但因 `/etc/docker/daemon.json` 已存在而跳过，随后 Docker Hub 拉取仍超时。
+- 核对合并逻辑覆盖保留其他字段、镜像地址去重、备份、原子写入与重启验证。
+- `bash -n deploy/install.sh` 与 `git diff --check` 通过。
+
+**已知限制**
+
+- 第三方镜像加速服务可用性由外部服务决定。
+- 服务器实际 Docker 重启与镜像拉取需在部署环境复验。
+
+**关联文档**
+
+- `README.md`：更新 Docker Hub 超时排障版本与 daemon.json 自动合并说明。
+- `docs/部署文档.md`：适用版本更新为 V1.2.4，补充自动合并、备份与失败处理说明。
