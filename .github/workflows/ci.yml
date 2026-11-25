@@ -266,3 +266,30 @@ jobs:
       - name: Cleanup
         if: always()
         run: docker rm -f eoms-api-ci || true
+
+  # ---------------------------------------------------------------------------
+  # 6. 部署脚本与 Compose 配置校验
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          bash -n deploy/install.sh
+          bash -n deploy/eoms.sh
+          bash -n scripts/backup.sh
+
+      - name: Compose config
+        run: |
+          cp .env.docker.example .env
+          docker compose config -q
+          echo "compose config ok"
+
+      - name: Compose minimal profile
+        run: |
+          sed -i 's/^COMPOSE_PROFILES=.*/COMPOSE_PROFILES=/' .env
+          docker compose config -q
+          echo "minimal profile ok"

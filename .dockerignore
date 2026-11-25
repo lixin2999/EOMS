@@ -1,5 +1,6 @@
 .git
 .gitignore
+.gitattributes
 .github
 .venv
 venv
@@ -19,6 +20,11 @@ logs
 !.env.example
 !.env.docker.example
 docker-compose.override.yml
+docs
+deploy
+tests
+backups
+release.md
 web/node_modules
 web/dist
 web/.vite

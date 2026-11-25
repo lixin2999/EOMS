@@ -1,0 +1,22 @@
+# Shell 脚本必须在 Linux 上以 LF 换行执行（Windows 检出也不得转换为 CRLF）
+*.sh text eol=lf
+docker/*.sh text eol=lf
+deploy/*.sh text eol=lf
+scripts/*.sh text eol=lf
+
+# 容器与 CI 配置
+Dockerfile text eol=lf
+docker/Dockerfile text eol=lf
+web/Dockerfile text eol=lf
+*.conf text eol=lf
+docker-compose*.yml text eol=lf
+.github/workflows/*.yml text eol=lf
+
+# 部署配置
+deploy/**/*.yml text eol=lf
+deploy/**/*.yaml text eol=lf
+deploy/**/*.json text eol=lf
+
+# 文档与文本
+*.md text eol=lf
+.env* text eol=lf

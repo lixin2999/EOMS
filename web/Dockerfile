@@ -1,13 +1,18 @@
+# syntax=docker/dockerfile:1.7
 # ---------------------------------------------------------------------------
 # EOMS 前端镜像：Node 构建 → Nginx 运行（静态资源 + /api 反向代理）
 # 构建上下文必须为仓库根目录：docker build -f web/Dockerfile .
 # ---------------------------------------------------------------------------
 FROM node:20-alpine AS build
 
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 WORKDIR /app
 
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN --mount=type=cache,target=/root/.npm \
+    npm config set registry "$NPM_REGISTRY" \
+    && npm ci --no-audit --no-fund
 
 COPY web/ ./
 RUN npm run build

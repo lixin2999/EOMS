@@ -59,7 +59,7 @@ EOMS/
 ├── docs/                   # 概要设计、用户手册、部署与运维文档
 ├── web/                    # 前端工程（Vite）
 ├── docker/                 # Dockerfile、entrypoint、nginx.conf
-├── deploy/                 # Prometheus / Grafana / Loki / Promtail 配置
+├── deploy/                 # 一键部署/运维脚本、Prometheus/Grafana/Loki/Promtail 配置
 ├── docker-compose.yml      # 生产编排
 ├── release.md              # 版本发布记录
 ├── .env.example            # 本地开发变量模板
@@ -171,7 +171,50 @@ mypy app                                 # 类型检查
 
 ## 7. Docker 部署
 
-### 7.1 准备
+### 7.1 一键部署（Ubuntu 22.04，推荐）
+
+```bash
+git clone <仓库地址> /opt/eoms
+cd /opt/eoms
+sudo bash deploy/install.sh
+```
+
+脚本会自动完成：
+
+1. 安装 Docker Engine、Buildx 与 Compose v2（`--cn-mirror` 使用国内软件源与镜像加速）；
+2. 生成 `.env` 并随机生成数据库、MinIO、Grafana、JWT、AES 全部密钥，权限 `600`；
+3. 构建镜像并启动 `db / redis / minio / api / worker / beat / nginx`（默认含监控组件）；
+4. 等待 `/healthz` 通过，首次部署自动初始化演示数据；
+5. 安装 `eoms` 运维命令，日常启停、升级、备份、日志一条命令完成。
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--port 8080` | 修改对外端口（默认 80） |
+| `--domain eoms.example.com` | 使用域名访问 |
+| `--origin https://eoms.example.com` | 由外部网关终止 TLS，自动启用安全 Cookie |
+| `--seed` / `--no-seed` | 强制 / 禁止初始化演示数据 |
+| `--minimal` | 不启动 Prometheus/Grafana/Loki/Promtail，降低资源占用 |
+| `--cn-mirror` | 国内网络加速（Docker、pip、npm） |
+| `--skip-docker-install` | 已自行安装 Docker 时跳过安装 |
+
+示例：
+
+```bash
+# 内网 8080 端口，国内网络
+sudo bash deploy/install.sh --port 8080 --cn-mirror
+
+# 已由云负载均衡提供 HTTPS，EOMS 只监听内网
+sudo bash deploy/install.sh --origin https://eoms.example.com --port 8080
+
+# 轻量部署，不启用监控
+sudo bash deploy/install.sh --minimal
+```
+
+> 重复执行安装脚本是安全的：已有 `.env` 的密钥与数据不会被重置，仅重建镜像并滚动启动。
+
+### 7.2 手动部署
 
 详细步骤、TLS、升级回滚与排障见 [`docs/部署文档.md`](docs/部署文档.md)。
 
@@ -194,7 +237,9 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
 ```
 
-### 7.2 构建与启动
+> 手动部署且暂时使用 HTTP 访问时，需将 `EOMS_COOKIE_SECURE` 改为 `false`，否则浏览器不会保存会话 Cookie，表现为登录后立即掉线；正式环境请配置 HTTPS 并保持 `true`。
+
+### 7.3 构建与启动
 
 ```bash
 docker compose build
@@ -211,7 +256,7 @@ docker compose run --rm api python scripts/seed.py
 
 访问：<http://localhost>（`HTTP_PORT` 可改）。
 
-### 7.3 服务与端口
+### 7.4 服务与端口
 
 | 服务 | 说明 | 对外端口 |
 | --- | --- | --- |
@@ -222,9 +267,11 @@ docker compose run --rm api python scripts/seed.py
 | `db` | PostgreSQL 16（数据卷持久化） | 不暴露 |
 | `redis` | Redis 7（AOF） | 不暴露 |
 | `minio` | MinIO 对象存储 | 不暴露 |
-| `prometheus` | 指标采集 | `127.0.0.1:${PROMETHEUS_PORT:-9090}` |
-| `grafana` | 监控面板 | `127.0.0.1:${GRAFANA_PORT:-3000}` |
-| `loki` / `promtail` | 日志聚合/采集 | 不暴露 |
+| `prometheus` | 指标采集（`monitoring` profile） | `127.0.0.1:${PROMETHEUS_PORT:-9090}` |
+| `grafana` | 监控面板（`monitoring` profile） | `127.0.0.1:${GRAFANA_PORT:-3000}` |
+| `loki` / `promtail` | 日志聚合/采集（`monitoring` profile） | 不暴露 |
+
+> 监控组件通过 Compose profile `monitoring` 控制，由 `.env` 中的 `COMPOSE_PROFILES` 决定是否启动。
 
 扩容 API：
 
@@ -234,7 +281,24 @@ docker compose up -d --scale api=3
 
 `api` 无状态且不设固定容器名，Nginx 通过 Docker DNS 动态解析副本。
 
-### 7.4 常用运维命令
+### 7.5 常用运维命令
+
+一键部署会自动安装 `eoms` 命令：
+
+```bash
+eoms status          # 容器与健康状态
+eoms info            # 访问地址、端口、监控状态
+eoms logs api        # 跟踪日志（默认 api nginx）
+eoms restart         # 重启 api/worker/beat/nginx
+eoms update          # 备份 + 拉取代码 + 重建 + 滚动启动
+eoms backup          # 数据库 + 对象存储备份
+eoms restore backups/eoms-20260101-020000.tar.gz
+eoms monitoring enable|disable|status
+eoms seed            # 初始化演示数据
+eoms doctor          # 环境诊断
+```
+
+未安装 `eoms` 时仍可直接使用 Compose：
 
 ```bash
 docker compose logs -f api worker

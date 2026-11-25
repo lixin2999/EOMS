@@ -29,6 +29,8 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.1 | 2026-11-21 | 问题修复 | 一键部署收尾完善：端口变更同步 origin、IPv6 地址、帮助免 Docker、参数校验与依赖检测 |
+| V1.2.0 | 2026-11-20 | 功能新增 | Ubuntu 22.04 一键 Docker 部署、eoms 运维命令、监控组件按需启停与构建加速 |
 | V1.1.0 | 2026-11-19 | 功能新增 | 系统管理增强：部门删除、修改密码菜单页、账号开通（随机密码/启停开关）与用户字段清空修复 |
 | V1.0.1 | 2026-11-19 | 问题修复 | 修复：RLS 通知、付款幂等与并发、审批入账解耦、报表口径与导出审计、令牌与会话安全加固 |
 | V1.0.0 | 2026-11-18 | 首次正式发布 | EOMS 全模块上线：审批、项目、供应商、合同、成本、报表、平台管理、容器化与监控 |
@@ -284,3 +286,110 @@
 **关联文档**
 
 - `docs/用户手册.md`：10.1 用户管理（账号开通）、10.3 组织架构（删除约束）、10.7 修改密码，以及常见错误新增「该部门下还有 N 个子部门/用户」。
+
+---
+
+### V1.2.0（2026-11-20）
+
+**版本类型**：功能新增（Feature）
+
+**变更概述**
+
+面向 Ubuntu 22.04 服务器交付一键 Docker 部署能力：新增 `deploy/install.sh` 自动安装 Docker、生成随机密钥、构建并启动、健康检查与演示数据初始化；新增 `eoms` 运维命令覆盖启停、日志、升级、备份恢复与监控开关；监控组件改为 Compose profile 按需启停。
+
+**新增功能**
+
+- **一键部署脚本 `deploy/install.sh`**
+  - 自动检测 Ubuntu/Debian，安装 Docker Engine、Buildx 与 Compose v2。
+  - `--cn-mirror` 使用阿里云 Docker 源，并配置 Docker 镜像加速与 pip/npm 国内源。
+  - 自动生成 `.env` 并随机生成 JWT、AES、PostgreSQL、MinIO、Grafana 密钥，权限 `600`；重复执行不覆盖现有密钥。
+  - 自动推断 `EOMS_PUBLIC_ORIGIN`、`EOMS_TRUSTED_HOSTS`、`EOMS_COOKIE_SECURE`，支持 `--origin https://...` 适配外部 TLS 网关。
+  - 构建镜像、启动服务、轮询 `/healthz`，首次部署默认初始化演示数据。
+  - 自动安装 `/usr/local/bin/eoms`。
+- **运维命令 `deploy/eoms.sh`**
+  - `status / info / health / doctor` 状态与诊断。
+  - `up / down / start / stop / restart / logs / shell / dbshell` 日常运维。
+  - `update` 支持升级前自动备份、Git 拉取、重建与滚动启动。
+  - `backup / restore` 封装数据库与 MinIO 备份恢复，恢复前校验 sha256。
+  - `monitoring enable|disable|status` 动态启停监控组件。
+  - `seed`、`config`、`destroy` 等辅助命令。
+
+**变更/优化**
+
+- `docker-compose.yml` 为 Prometheus/Grafana/Loki/Promtail 增加 `monitoring` profile，默认仍随一键部署启动，`--minimal` 可关闭。
+- 后端与前端 Dockerfile 增加 BuildKit 缓存挂载，并支持 `PIP_INDEX_URL`、`NPM_REGISTRY` 构建参数加速依赖安装。
+- 新增 `.gitattributes`，保证 Shell 脚本在 Windows 检出后仍以 LF 换行执行。
+- CI 增加部署脚本语法与 Compose 配置校验。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+1. 已有部署可直接拉取代码后执行 `eoms update`，或 `docker compose build && docker compose up -d`。
+2. 已有 `.env` 不会被一键脚本覆盖；如需启用监控 profile，确认 `.env` 含 `COMPOSE_PROFILES=monitoring` 或执行 `eoms monitoring enable`。
+3. 公网部署请配置 HTTPS，并使用 `--origin https://域名` 或手动设置 `EOMS_COOKIE_SECURE=true`。
+
+**验证情况**
+
+- `bash -n deploy/install.sh`、`bash -n deploy/eoms.sh`、`bash -n scripts/backup.sh` 均通过。
+- 使用模拟 Docker CLI 验证 `.env` 密钥生成、重复执行幂等、端口/域名/HTTPS 参数、监控开关与恢复流程。
+- CI 新增部署资产校验任务：Shell 语法、默认与 `--minimal` 两种 Compose 配置。
+- 真实 Docker 镜像构建与容器启动待在 Ubuntu 22.04 服务器复核。
+
+**已知限制**
+
+- 一键脚本不自动申请 TLS 证书；HTTPS 建议由云负载均衡/独立网关终止，或按部署文档手工配置。
+- 国内镜像源可用性随第三方服务变化，失败时可在 `.env` 中改回官方源。
+- `eoms restore` 会停止写入，恢复时长取决于备份体积，需在维护窗口执行。
+
+**关联文档**
+
+- `README.md`：Docker 部署章节更新为一键部署 + 手动部署 + `eoms` 命令。
+- `docs/部署文档.md`：新增「0. 一键部署」、监控 profile 说明与命令速查。
+
+### V1.2.1（2026-11-21）
+
+**版本类型**：问题修复 / 功能完善（Patch）
+
+**变更概述**
+
+对 V1.2.0 一键部署能力做收尾完善，修复重复部署时端口与对外地址不一致的问题，补齐 IPv6、帮助信息与参数校验，并改进系统依赖检测，降低首次部署失败率。
+
+**问题修复**
+
+- **端口变更后 origin 不同步**：已有 `.env` 时执行 `--port` 修改端口，`EOMS_PUBLIC_ORIGIN` 仍指向旧端口，导致浏览器 CORS 校验失败。现自动将 HTTP 直连地址同步为新端口；`https://` 外部网关地址保持不变，不会被误加端口。
+- **IPv6 公网地址格式**：自动探测到 IPv6 时按规范生成 `http://[地址]:端口`，避免 URL 解析失败。
+- **`eoms` 帮助不可用**：未安装 Docker 或缺少 `.env` 时执行 `eoms help` 会直接报错。现帮助信息在任何环境均可查看，且无参数执行等同于 `help`。
+
+**变更/优化**
+
+- 依赖按需安装：`curl`、`python3` 改为检测命令是否存在后再安装，兼容精简系统镜像。
+- 参数校验增强：`--origin` 必须是 `http(s)://` 开头且不含路径；`--domain` 禁止携带 `http://`、`https://` 前缀与端口。
+- 安装完成后提示补充「非 root 用户需重新登录以生效 docker 组」，并输出详细部署文档位置。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+- 本版本仅涉及部署脚本，已部署实例无需重建镜像；拉取代码后重新执行 `sudo bash deploy/install.sh` 即可应用脚本修复，现有 `.env` 与数据卷不受影响。
+- 若曾用 `--port` 改过端口，可执行一次安装脚本自动校正 `EOMS_PUBLIC_ORIGIN`，或手动修改 `.env` 后 `eoms up`。
+
+**验证情况**
+
+- `bash -n` 校验 `deploy/install.sh`、`deploy/eoms.sh`、`scripts/backup.sh`、`docker/entrypoint.sh` 全部通过。
+- WSL 模拟 Docker CLI 验证：连续执行 `--port 18098 → 18099` 时 origin 正确同步；切换到 `--origin https://eoms.example.com` 后再改端口，HTTPS origin 保持不变；`eoms help`、`eoms info`、`eoms health` 正常。
+- `git diff --check` 无空白错误，`.gitattributes` 保证脚本 LF 换行。
+
+**已知限制**
+
+- 本机无 Docker，真实镜像构建与容器启动仍需在 Ubuntu 22.04 服务器或 CI 复核。
+- 端口同步仅作用于 `http://` 直连地址；HTTPS 由外部网关终止时，对外端口仍需在网关侧同步调整。
+
+**关联文档**
+
+- `README.md`：一键部署参数与 `eoms` 命令说明。
+- `docs/部署文档.md`：一键部署与排障章节。

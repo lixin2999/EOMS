@@ -4,6 +4,7 @@
 # 说明：
 #   - 密钥全部由 .env 注入（参考 .env.docker.example），不入镜像、不入仓库；
 #   - db/redis/minio 不映射宿主端口，仅容器网络内可达；
+#   - prometheus/grafana/loki/promtail 属于 monitoring profile，由 COMPOSE_PROFILES 控制；
 #   - api 无状态，可水平扩容：docker compose up -d --scale api=2
 # ---------------------------------------------------------------------------
 name: eoms
@@ -38,6 +39,8 @@ x-backend: &backend
   build:
     context: .
     dockerfile: docker/Dockerfile
+    args:
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
   image: eoms-api:1.0.0
   env_file:
     - .env
@@ -60,6 +63,8 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     image: eoms-web:1.0.0
     container_name: eoms-nginx
     ports:
@@ -185,13 +190,19 @@ services:
       - -c
       - |
         set -eu
-        for i in $$(seq 1 30); do
+        ready=0
+        for i in $$(seq 1 60); do
           if mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; then
+            ready=1
             break
           fi
-          echo "等待 MinIO 就绪（$$i/30）..."
+          echo "等待 MinIO 就绪（$$i/60）..."
           sleep 2
         done
+        if [ "$$ready" -ne 1 ]; then
+          echo "MinIO 在 120 秒内未就绪" >&2
+          exit 1
+        fi
         mc mb --ignore-existing "local/$$MINIO_BUCKET"
         mc anonymous set none "local/$$MINIO_BUCKET" || true
         echo "MinIO bucket $$MINIO_BUCKET 已就绪"
@@ -201,6 +212,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.55.1
     container_name: eoms-prometheus
+    profiles: ["monitoring"]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -226,6 +238,7 @@ services:
   loki:
     image: grafana/loki:3.3.2
     container_name: eoms-loki
+    profiles: ["monitoring"]
     command: ["-config.file=/etc/loki/loki-config.yml"]
     volumes:
       - ./deploy/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
@@ -242,19 +255,22 @@ services:
   promtail:
     image: grafana/promtail:3.3.2
     container_name: eoms-promtail
+    profiles: ["monitoring"]
     command: ["-config.file=/etc/promtail/promtail-config.yml"]
     volumes:
       - ./deploy/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
     depends_on:
-      - loki
+      loki:
+        condition: service_healthy
     restart: unless-stopped
     logging: *default-logging
 
   grafana:
     image: grafana/grafana:11.4.0
     container_name: eoms-grafana
+    profiles: ["monitoring"]
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD 必须在 .env 中设置}

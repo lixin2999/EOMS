@@ -18,9 +18,12 @@ RUN apt-get update \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}"
 
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
 COPY pyproject.toml README.md ./
 COPY app ./app
-RUN pip install --upgrade pip && pip install .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && pip install --index-url "$PIP_INDEX_URL" .
 
 # ---------------------------------------------------------------------------
 FROM python:3.12-slim AS runtime
