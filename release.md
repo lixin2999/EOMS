@@ -29,6 +29,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.9 | 2026-11-25 | 问题修复 | 修复 PostgreSQL 营收报表分组错误，兼容演示数据初始化与报表快照生成 |
 | V1.2.8 | 2026-11-25 | 问题修复 | 部署前检查 HTTP 与监控端口冲突，明确提示修改 Prometheus/Grafana 端口 |
 | V1.2.7 | 2026-11-25 | 问题修复 | MinIO 初始化、备份与恢复改用后端镜像内置 SDK，彻底移除独立 mc 镜像依赖 |
 | V1.2.6 | 2026-11-25 | 问题修复 | MinIO 与 mc 固定到可用历史 release，优先国内缓存源并彻底移除 latest 依赖 |
@@ -746,3 +747,58 @@
 
 - `README.md`：补充 V1.2.8 端口预检说明与 `address already in use` 排障。
 - `docs/部署文档.md`：适用版本更新为 V1.2.8，补充监控端口修改示例与冲突处理。
+
+---
+
+### V1.2.9（2026-11-25）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+修复生产 PostgreSQL 执行 `eoms seed` 或生成报表快照时，营收报表查询报 `GroupingError` 的问题。原查询始终选择期间、项目、客户三个维度，却只按用户选择的一个维度分组；SQLite 的宽松行为掩盖了缺陷，PostgreSQL 会直接拒绝执行。现查询仅选择并分组当前维度，确保初始化、实时报表、导出与快照使用同一严格口径。
+
+**新增功能**
+
+- 无新增业务功能。
+
+**变更/优化**
+
+- `revenue_report` 按 `period / project / customer` 动态选择查询列与 `GROUP BY` 列；非法维度统一回退为 `period`，响应中的 `group_by` 与实际分组保持一致。
+- 分组响应仅填充当前维度，其余维度字段返回 `null`，避免把任意一行的未分组值误当成整个分组的属性。
+- 新增三种维度的聚合结果回归测试，以及 PostgreSQL 方言 SQL 编译测试，校验查询列与分组列一致。
+- PostgreSQL CI 在迁移校验后增加演示数据初始化与报表快照生成步骤，覆盖真实数据库的分组约束。
+
+**问题修复**
+
+- **`eoms seed` 中断**：修复 `column "fin_revenue_confirm.project_id" must appear in the GROUP BY clause or be used in an aggregate function`。
+- **报表快照任务中断**：`generate_company_snapshots` 调用同一营收指标，现可在 PostgreSQL 正常生成公司级快照。
+- **维度语义不稳定**：按项目或客户分组时不再返回 SQLite 任意选取的期间、项目或客户字段，也不再产生同一维度的重复分组行。
+
+**数据库变更**
+
+- 无数据库迁移，仅修改查询与统计逻辑。
+
+**升级说明**
+
+1. 同步更新 `app/services/report/metrics.py`、`tests/test_01_reports.py`、`.github/workflows/ci.yml` 与相关文档。
+2. 在服务器重新执行部署脚本并保持原有端口及访问地址参数，重建 API、worker、beat 所使用的后端镜像。
+3. 初始化脚本使用事务，上次失败会回滚本次写入；升级后直接执行 `eoms seed --yes`，无需执行 `--reset` 或数据库迁移。
+4. 打开营收报表分别切换期间、项目、客户维度，并生成一次报表快照，确认均返回 200。
+
+**验证情况**
+
+- 报表专项测试 17 项通过，覆盖三种维度的聚合数量、金额、笔数、键唯一性与 PostgreSQL 查询结构。
+- 完整 Pytest 137 项通过，全量 Ruff 通过，Mypy 检查 106 个源文件无错误。
+- Python 编译、CI/Compose YAML 解析与 `git diff --check` 通过。
+- 本机未安装 Docker/PostgreSQL，真实 PostgreSQL 执行由新增 CI 步骤覆盖；服务器升级后的 `eoms seed` 仍需复验。
+
+**已知限制**
+
+- 本地自动化测试仍使用 SQLite，不能仅靠单测执行 PostgreSQL 的全部约束；必须保留 PostgreSQL CI 或等效集成测试。
+- 历史错误快照若已部分写入，应重新生成覆盖；本次失败路径会回滚，不涉及存量数据修复。
+
+**关联文档**
+
+- `README.md`：补充 V1.2.9 说明、PostgreSQL CI 覆盖与 `GroupingError` 排障。
+- `docs/部署文档.md`：适用版本更新为 V1.2.9，补充初始化失败后的升级与重试说明。

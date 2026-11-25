@@ -159,6 +159,9 @@ jobs:
           alembic current
           alembic check
 
+      - name: Seed and generate report snapshots on PostgreSQL
+        run: python -m scripts.seed
+
   # ---------------------------------------------------------------------------
   # 5. 镜像构建 + 容器冒烟（API 连 PostgreSQL / Redis，校验健康检查与接口）
   # ---------------------------------------------------------------------------

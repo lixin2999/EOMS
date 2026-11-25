@@ -207,10 +207,15 @@ def revenue_report(
     group_by: str = "period",
 ) -> dict:
     start, end = _month_range(start, end)
+    group_columns = {
+        "period": RevenueConfirm.period,
+        "project": RevenueConfirm.project_id,
+        "customer": RevenueConfirm.customer_id,
+    }
+    group_by = group_by if group_by in group_columns else "period"
+    group_column = group_columns[group_by]
     stmt = select(
-        RevenueConfirm.period,
-        RevenueConfirm.project_id,
-        RevenueConfirm.customer_id,
+        group_column,
         func.coalesce(func.sum(RevenueConfirm.amount), 0),
         func.count(RevenueConfirm.id),
     ).where(
@@ -219,26 +224,21 @@ def revenue_report(
         RevenueConfirm.period <= end,
     )
     stmt = _scope(stmt, ctx, RevenueConfirm)
-    group_column = {
-        "period": RevenueConfirm.period,
-        "project": RevenueConfirm.project_id,
-        "customer": RevenueConfirm.customer_id,
-    }.get(group_by, RevenueConfirm.period)
     stmt = stmt.group_by(group_column).order_by(group_column)
     rows = db.execute(stmt).all()
     items = []
-    for period, project_id, customer_id, amount, count in rows:
+    for key, amount, count in rows:
         items.append(
             {
-                "key": str(project_id or customer_id or period),
-                "period": period,
-                "project_id": project_id,
-                "customer_id": customer_id,
+                "key": str(key),
+                "period": key if group_by == "period" else None,
+                "project_id": key if group_by == "project" else None,
+                "customer_id": key if group_by == "customer" else None,
                 "amount": float(money(amount)),
                 "count": int(count),
             }
         )
-    total = sum(money(row[3]) for row in rows)
+    total = sum(money(row[1]) for row in rows)
     return {"start": start, "end": end, "group_by": group_by, "total": float(total), "items": items}
 
 

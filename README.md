@@ -228,6 +228,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.7 起，bucket 初始化、备份与恢复复用 `eoms-api` 镜像中的 Python MinIO SDK，不再依赖独立的 `minio/mc` 镜像。
 >
 > V1.2.8 起，部署前会检查 HTTP、Prometheus 与 Grafana 端口冲突；监控端口可在 `.env` 中通过 `PROMETHEUS_PORT`、`GRAFANA_PORT` 调整。
+>
+> V1.2.9 起，营收报表严格按所选期间/项目/客户维度分组，兼容 PostgreSQL 的严格分组校验，修复演示数据初始化与报表快照生成时的 `GroupingError`。
 
 ### 7.2 手动部署
 
@@ -391,7 +393,7 @@ docker compose restart api worker beat
 2. `pytest --cov=app`（覆盖率阈值 80%）
 3. 前端 `npm ci && npm run build`
 4. 构建后端与前端镜像
-5. 在 PostgreSQL 服务上执行 `alembic upgrade head`（并校验模型与迁移一致）
+5. 在 PostgreSQL 服务上执行 `alembic upgrade head`（并校验模型与迁移一致），随后执行演示数据初始化与报表快照生成
 6. 构建后端/前端镜像，以 Docker 容器连接 PostgreSQL + Redis 启动 API，冒烟检查 `/healthz`、`/readyz`、验证码与 OpenAPI
 
 ## 12. 常见问题
@@ -406,6 +408,7 @@ docker compose restart api worker beat
 | 写操作返回 403「CSRF 校验失败」 | 前端需带 `X-CSRF-Token`（值取自 `eoms_csrf` Cookie）；跨域部署检查 CORS 是否放行该请求头 |
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
+| `eoms seed` 或报表快照报 `GroupingError`、`project_id must appear in the GROUP BY clause` | 使用 V1.2.9 或更新版本并重建后端服务；修复后重新执行 `eoms seed --yes`，无需数据库迁移 |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
 | 启动时拉取 `minio/mc` 等镜像提示超时、denied 或 manifest unknown | 使用 V1.2.7 或更新版本；初始化与备份恢复已改用 `eoms-api` 内置 SDK，只需拉取 MinIO 服务镜像。执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
 | 启动时报 `address already in use` | HTTP 或监控端口被其他应用占用 | HTTP 端口使用 `--port N`；在 `.env` 修改 `PROMETHEUS_PORT`、`GRAFANA_PORT`，并同步 `GRAFANA_ROOT_URL` 后重试。不需要监控时可加 `--minimal` |
