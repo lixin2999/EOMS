@@ -587,6 +587,23 @@ chmod 600 "$ENV_FILE"
 # 显式导出，确保当前进程内的 Compose 调用立即使用最新 profile
 export COMPOSE_PROFILES="$PROFILES"
 
+if (( MONITORING )); then
+    PROMETHEUS_PORT="$(env_get PROMETHEUS_PORT)"
+    PROMETHEUS_PORT="${PROMETHEUS_PORT:-9090}"
+    GRAFANA_PORT="$(env_get GRAFANA_PORT)"
+    GRAFANA_PORT="${GRAFANA_PORT:-3000}"
+
+    [[ $PROMETHEUS_PORT =~ ^[0-9]+$ ]] || die ".env 中 PROMETHEUS_PORT 必须是数字"
+    [[ $GRAFANA_PORT =~ ^[0-9]+$ ]] || die ".env 中 GRAFANA_PORT 必须是数字"
+    PROMETHEUS_PORT=$((10#$PROMETHEUS_PORT))
+    GRAFANA_PORT=$((10#$GRAFANA_PORT))
+    (( PROMETHEUS_PORT >= 1 && PROMETHEUS_PORT <= 65535 )) || die ".env 中 PROMETHEUS_PORT 必须在 1-65535 之间"
+    (( GRAFANA_PORT >= 1 && GRAFANA_PORT <= 65535 )) || die ".env 中 GRAFANA_PORT 必须在 1-65535 之间"
+    [[ $PROMETHEUS_PORT != "$HTTP_PORT" && $GRAFANA_PORT != "$HTTP_PORT" ]] || die "监控端口不能与 HTTP_PORT=$HTTP_PORT 相同"
+    [[ $PROMETHEUS_PORT != "$GRAFANA_PORT" ]] || die "PROMETHEUS_PORT 与 GRAFANA_PORT 不能相同"
+    export PROMETHEUS_PORT GRAFANA_PORT
+fi
+
 for key in EOMS_SECRET_KEY EOMS_AES_KEY POSTGRES_PASSWORD MINIO_ROOT_PASSWORD GRAFANA_ADMIN_PASSWORD; do
     [[ -n "$(env_get "$key")" ]] || die ".env 中 $key 为空，请参考 $ENV_TEMPLATE 修正"
 done
@@ -602,11 +619,28 @@ docker compose config -q
 # ---------------------------------------------------------------------------
 # 3. 端口检查、构建与启动
 # ---------------------------------------------------------------------------
-if command -v ss >/dev/null 2>&1; then
-    if ss -ltnH "sport = :$HTTP_PORT" 2>/dev/null | grep -q .; then
-        if ! docker ps --format '{{.Ports}}' 2>/dev/null | grep -Eq "[:.]$HTTP_PORT->"; then
-            die "端口 $HTTP_PORT 已被其他进程占用，请使用 --port 指定其他端口"
+eoms_owns_port() {
+    local port=$1
+    docker ps --filter "label=com.docker.compose.project=eoms" --format '{{.Ports}}' 2>/dev/null \
+        | grep -Eq "[:.]$port->"
+}
+
+check_host_port() {
+    local port=$1
+    local label=$2
+    local hint=$3
+    if ss -ltnH "sport = :$port" 2>/dev/null | grep -q .; then
+        if ! eoms_owns_port "$port"; then
+            die "$label 端口 $port 已被其他进程占用，$hint"
         fi
+    fi
+}
+
+if command -v ss >/dev/null 2>&1; then
+    check_host_port "$HTTP_PORT" "HTTP" "请使用 --port 指定其他端口"
+    if (( MONITORING )); then
+        check_host_port "$PROMETHEUS_PORT" "Prometheus" "请在 .env 中修改 PROMETHEUS_PORT 后重试"
+        check_host_port "$GRAFANA_PORT" "Grafana" "请在 .env 中修改 GRAFANA_PORT 与 GRAFANA_ROOT_URL 后重试"
     fi
 fi
 

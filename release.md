@@ -29,6 +29,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.8 | 2026-11-25 | 问题修复 | 部署前检查 HTTP 与监控端口冲突，明确提示修改 Prometheus/Grafana 端口 |
 | V1.2.7 | 2026-11-25 | 问题修复 | MinIO 初始化、备份与恢复改用后端镜像内置 SDK，彻底移除独立 mc 镜像依赖 |
 | V1.2.6 | 2026-11-25 | 问题修复 | MinIO 与 mc 固定到可用历史 release，优先国内缓存源并彻底移除 latest 依赖 |
 | V1.2.5 | 2026-11-25 | 问题修复 | MinIO 与 mc 改用显式加速镜像并支持多源回退，备份恢复统一复用 Compose 镜像 |
@@ -697,3 +698,51 @@
 
 - `README.md`：更新目录结构、V1.2.7 说明、对象恢复命令与 MinIO 客户端镜像排障。
 - `docs/部署文档.md`：适用版本更新为 V1.2.7，更新组件表、备份恢复步骤与配置说明。
+
+---
+
+### V1.2.8（2026-11-25）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+修复监控端口被其他应用占用时，安装脚本直到 `docker compose up` 才报 `address already in use`，导致业务镜像构建和多个服务启动完成后才中断的问题。部署前现在会校验 HTTP、Prometheus 与 Grafana 端口，并区分 EOMS 已有容器与其他进程占用。
+
+**问题修复**
+
+- **监控端口冲突发现过晚**：原脚本只检查 `HTTP_PORT`，未检查 `PROMETHEUS_PORT` 与 `GRAFANA_PORT`。现均在构建前检查并终止，给出对应配置项。
+- **端口归属判断不准确**：原实现只要任意 Docker 容器占用端口就放行。现仅允许 `com.docker.compose.project=eoms` 的已有容器占用对应端口。
+- **端口配置相互冲突**：新增监控端口与 HTTP 端口、Prometheus 与 Grafana 端口之间的重复校验，并校验数字及 `1-65535` 范围。
+
+**变更/优化**
+
+- 从 `.env` 读取监控端口并导出到当前部署进程，确保预检、Compose 与终端提示使用同一配置。
+- 端口冲突提示明确区分 HTTP 与监控组件：HTTP 使用 `--port`，监控端口修改 `.env`；不需要监控时可使用 `--minimal`。
+- 环境模板、README 与部署文档补充端口修改及 `GRAFANA_ROOT_URL` 同步说明。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+1. 同步更新 `deploy/install.sh`、`.env.docker.example` 与相关文档。
+2. 在服务器 `.env` 设置例如 `PROMETHEUS_PORT=19090`、`GRAFANA_PORT=13000`，并同步 `GRAFANA_ROOT_URL=http://localhost:13000`。
+3. 重新执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`。
+4. 若端口仍冲突，使用 `ss -ltnp` 定位占用进程；不需要监控组件时可改用 `--minimal`。
+
+**验证情况**
+
+- 根据部署日志确认失败原因为 `127.0.0.1:9090` 已被其他应用占用，MinIO 初始化及 API 健康检查已成功。
+- 执行 Shell 语法、Compose YAML 解析与 `git diff --check`；端口冲突实际提示需在服务器复验。
+
+**已知限制**
+
+- 脚本依赖 `ss` 检查监听端口；若系统未安装 `ss`，仍由 Docker 在启动阶段报告绑定失败。
+- 脚本不会自动选择空闲端口，避免与现有运维约定和防火墙规则冲突。
+
+**关联文档**
+
+- `README.md`：补充 V1.2.8 端口预检说明与 `address already in use` 排障。
+- `docs/部署文档.md`：适用版本更新为 V1.2.8，补充监控端口修改示例与冲突处理。

@@ -226,6 +226,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.6 起，MinIO 固定到历史 release，并优先使用仍可访问的国内缓存镜像，不再使用已失效的 `latest`。
 >
 > V1.2.7 起，bucket 初始化、备份与恢复复用 `eoms-api` 镜像中的 Python MinIO SDK，不再依赖独立的 `minio/mc` 镜像。
+>
+> V1.2.8 起，部署前会检查 HTTP、Prometheus 与 Grafana 端口冲突；监控端口可在 `.env` 中通过 `PROMETHEUS_PORT`、`GRAFANA_PORT` 调整。
 
 ### 7.2 手动部署
 
@@ -406,6 +408,7 @@ docker compose restart api worker beat
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
 | 启动时拉取 `minio/mc` 等镜像提示超时、denied 或 manifest unknown | 使用 V1.2.7 或更新版本；初始化与备份恢复已改用 `eoms-api` 内置 SDK，只需拉取 MinIO 服务镜像。执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
+| 启动时报 `address already in use` | HTTP 或监控端口被其他应用占用 | HTTP 端口使用 `--port N`；在 `.env` 修改 `PROMETHEUS_PORT`、`GRAFANA_PORT`，并同步 `GRAFANA_ROOT_URL` 后重试。不需要监控时可加 `--minimal` |
 
 ## 13. 版本维护
 
