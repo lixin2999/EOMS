@@ -41,20 +41,13 @@ docker compose exec -T db \
 
 echo "[backup] 2/4 镜像 MinIO 对象存储..."
 docker compose run --rm --no-deps \
+    -e MINIO_ENDPOINT=minio:9000 \
     -e MINIO_ROOT_USER="${MINIO_ROOT_USER:-eoms}" \
     -e MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:?缺少 MINIO_ROOT_PASSWORD}" \
     -e MINIO_BUCKET="${MINIO_BUCKET:-eoms}" \
     -v "$WORK_DIR:/backup" \
-    --entrypoint /bin/sh \
-    minio-init -c '
-        set -eu
-        mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
-        if mc ls "local/$MINIO_BUCKET" >/dev/null 2>&1; then
-            mc mirror --overwrite --quiet "local/$MINIO_BUCKET" /backup/minio
-        else
-            mkdir -p /backup/minio
-        fi
-    '
+    --entrypoint /opt/venv/bin/python \
+    minio-init /app/scripts/minio_storage.py backup /backup/minio
 
 echo "[backup] 3/4 打包并校验..."
 tar -czf "$ARCHIVE" -C "$WORK_DIR" db.dump minio

@@ -54,6 +54,7 @@ EOMS/
 ├── migrations/             # Alembic 迁移
 ├── scripts/
 │   ├── seed.py             # 演示数据初始化（--reset 重建）
+│   ├── minio_storage.py    # bucket 初始化、对象备份与恢复
 │   └── backup.sh           # 数据库 + 对象存储备份
 ├── tests/                  # 接口测试与权限隔离专项
 ├── docs/                   # 概要设计、用户手册、部署与运维文档
@@ -220,9 +221,11 @@ sudo bash deploy/install.sh --minimal
 >
 > V1.2.4 起，已有 `/etc/docker/daemon.json` 时会安全合并 `registry-mirrors`，保留其他配置并自动备份。
 >
-> V1.2.5 起，国内部署会为 MinIO 与 `mc` 显式选择加速镜像地址并写入 `.env`，避免 Docker Hub 回退导致拉取失败。
+> V1.2.5 起，国内部署会为 MinIO 显式选择加速镜像地址并写入 `.env`，避免 Docker Hub 回退导致拉取失败。
 >
-> V1.2.6 起，MinIO 与 `mc` 固定到历史 release，并优先使用仍可访问的国内缓存镜像，不再使用已失效的 `latest`。
+> V1.2.6 起，MinIO 固定到历史 release，并优先使用仍可访问的国内缓存镜像，不再使用已失效的 `latest`。
+>
+> V1.2.7 起，bucket 初始化、备份与恢复复用 `eoms-api` 镜像中的 Python MinIO SDK，不再依赖独立的 `minio/mc` 镜像。
 
 ### 7.2 手动部署
 
@@ -357,11 +360,11 @@ docker compose exec -T db pg_restore -U eoms -d eoms --clean --if-exists --no-ow
 
 # 3. 恢复对象存储
 docker compose run --rm --no-deps \
+    -e MINIO_ENDPOINT=minio:9000 \
     -e MINIO_ROOT_USER=eoms -e MINIO_ROOT_PASSWORD='***' -e MINIO_BUCKET=eoms \
-    -v /tmp/eoms-restore/minio:/backup --entrypoint /bin/sh minio-init -c '
-        mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
-        mc mirror --overwrite /backup "local/$MINIO_BUCKET"
-    '
+    -v /tmp/eoms-restore/minio:/backup \
+    --entrypoint /opt/venv/bin/python \
+    minio-init /app/scripts/minio_storage.py restore /backup
 
 # 4. 重启应用
 docker compose restart api worker beat
@@ -402,7 +405,7 @@ docker compose restart api worker beat
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
-| 启动时拉取 `minio/mc` 等镜像提示超时、denied 或 manifest unknown | 使用 V1.2.6 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`；MinIO 会使用固定 release 与国内缓存源 |
+| 启动时拉取 `minio/mc` 等镜像提示超时、denied 或 manifest unknown | 使用 V1.2.7 或更新版本；初始化与备份恢复已改用 `eoms-api` 内置 SDK，只需拉取 MinIO 服务镜像。执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
 
 ## 13. 版本维护
 

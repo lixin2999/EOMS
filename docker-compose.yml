@@ -177,35 +177,20 @@ services:
     logging: *default-logging
 
   minio-init:
-    image: ${MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-08-13T08-35-41Z}
+    # 复用已构建的后端镜像与 minio Python SDK，避免额外拉取 minio/mc
+    image: eoms-api:1.0.0
     container_name: eoms-minio-init
+    user: "0:0"
     depends_on:
       - minio
     environment:
+      MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-eoms}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD 必须在 .env 中设置}
       MINIO_BUCKET: ${MINIO_BUCKET:-eoms}
-    entrypoint:
-      - /bin/sh
-      - -c
-      - |
-        set -eu
-        ready=0
-        for i in $$(seq 1 60); do
-          if mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; then
-            ready=1
-            break
-          fi
-          echo "等待 MinIO 就绪（$$i/60）..."
-          sleep 2
-        done
-        if [ "$$ready" -ne 1 ]; then
-          echo "MinIO 在 120 秒内未就绪" >&2
-          exit 1
-        fi
-        mc mb --ignore-existing "local/$$MINIO_BUCKET"
-        mc anonymous set none "local/$$MINIO_BUCKET" || true
-        echo "MinIO bucket $$MINIO_BUCKET 已就绪"
+      MINIO_SECURE: "false"
+    entrypoint: ["/opt/venv/bin/python"]
+    command: ["/app/scripts/minio_storage.py", "init"]
     restart: "no"
     logging: *default-logging
 

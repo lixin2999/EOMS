@@ -329,17 +329,13 @@ cmd_restore() {
     if [[ -d "$tmp/minio" ]]; then
         log "恢复 MinIO 对象存储..."
         if ! docker compose run --rm --no-deps \
+            -e MINIO_ENDPOINT=minio:9000 \
             -e MINIO_ROOT_USER="${MINIO_ROOT_USER:-eoms}" \
             -e MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:?缺少 MINIO_ROOT_PASSWORD}" \
             -e MINIO_BUCKET="${MINIO_BUCKET:-eoms}" \
             -v "$tmp/minio:/backup:ro" \
-            --entrypoint /bin/sh \
-            minio-init -c '
-                set -eu
-                mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
-                mc mb --ignore-existing "local/$MINIO_BUCKET"
-                mc mirror --overwrite --quiet /backup "local/$MINIO_BUCKET"
-            '; then
+            --entrypoint /opt/venv/bin/python \
+            minio-init /app/scripts/minio_storage.py restore /backup; then
             warn "对象存储恢复失败，正在重新启动服务..."
             docker compose start api worker beat || true
             die "恢复中止"

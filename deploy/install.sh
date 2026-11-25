@@ -618,19 +618,11 @@ if (( CN_MIRROR )); then
     pull_minio_image MINIO_IMAGE \
         minio/minio:RELEASE.2025-09-07T16-13-09Z \
         minio/minio:latest \
-        docker.xuanyuan.run/minio/minio:RELEASE.2025-09-07T16-13-09Z \
         registry.cn-hangzhou.aliyuncs.com/fastgpt/minio:RELEASE.2025-09-07T16-13-09Z \
+        docker.xuanyuan.run/minio/minio:RELEASE.2025-09-07T16-13-09Z \
         docker.m.daocloud.io/minio/minio:RELEASE.2025-09-07T16-13-09Z \
         docker.1ms.run/minio/minio:RELEASE.2025-09-07T16-13-09Z \
         dockerproxy.net/minio/minio:RELEASE.2025-09-07T16-13-09Z
-    pull_minio_image MINIO_MC_IMAGE \
-        minio/mc:RELEASE.2025-08-13T08-35-41Z \
-        minio/mc:latest \
-        docker.xuanyuan.run/minio/mc:RELEASE.2025-08-13T08-35-41Z \
-        docker.m.daocloud.io/minio/mc:RELEASE.2025-08-13T08-35-41Z \
-        docker.1ms.run/minio/mc:RELEASE.2025-08-13T08-35-41Z \
-        dockerproxy.net/minio/mc:RELEASE.2025-08-13T08-35-41Z \
-        quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
 fi
 
 log "启动服务..."

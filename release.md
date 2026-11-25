@@ -29,6 +29,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.7 | 2026-11-25 | 问题修复 | MinIO 初始化、备份与恢复改用后端镜像内置 SDK，彻底移除独立 mc 镜像依赖 |
 | V1.2.6 | 2026-11-25 | 问题修复 | MinIO 与 mc 固定到可用历史 release，优先国内缓存源并彻底移除 latest 依赖 |
 | V1.2.5 | 2026-11-25 | 问题修复 | MinIO 与 mc 改用显式加速镜像并支持多源回退，备份恢复统一复用 Compose 镜像 |
 | V1.2.4 | 2026-11-25 | 问题修复 | 支持安全合并现有 daemon.json 的 registry-mirrors，保留原配置、备份并重启 Docker |
@@ -639,3 +640,60 @@
 
 - `README.md`：更新固定版本说明与 MinIO 镜像失败排障。
 - `docs/部署文档.md`：适用版本更新为 V1.2.6，补充固定 release、缓存源与维护风险说明。
+
+---
+
+### V1.2.7（2026-11-25）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+修复 MinIO 服务镜像已可拉取、但独立 `minio/mc` 客户端镜像从所有候选源返回 unauthorized、denied 或 manifest unknown，导致部署在启动前中断的问题。bucket 初始化、对象备份与恢复改为复用已构建的 `eoms-api` 镜像和项目已有的 Python MinIO SDK，不再依赖额外客户端镜像。
+
+**问题修复**
+
+- **独立 mc 镜像不可用**：轩辕镜像要求登录，DaoCloud 返回 denied，1ms、dockerproxy 返回 manifest unknown，Quay 返回 unauthorized。现删除 `MINIO_MC_IMAGE` 拉取与运行依赖。
+- **启动被客户端镜像阻断**：`minio-init` 改为 `eoms-api:1.0.0`，通过 `/app/scripts/minio_storage.py init` 等待 MinIO 就绪并幂等创建 bucket。
+- **备份恢复连带失败**：`scripts/backup.sh` 与 `deploy/eoms.sh` 改为调用同一 Python 脚本的 `backup`、`restore` 子命令，不再使用 `mc alias` 或 `mc mirror`。
+- **恢复路径穿越风险**：恢复对象名拒绝绝对路径、`..` 与反斜杠，并校验解析后的目标仍位于备份目录内。
+
+**新增功能**
+
+- 无新增业务功能；仅新增部署与运维辅助能力。
+
+**变更/优化**
+
+- 新增 `scripts/minio_storage.py`，复用 `minio>=7.2` SDK，支持初始化、递归备份与递归恢复。
+- 备份保留对象相对路径作为 key，恢复自动创建父目录；空 bucket 生成空备份目录。
+- 一次性管理容器以 root 运行，确保可读取历史备份挂载目录；业务 API、worker、beat 仍保持非 root 运行。
+- 国内部署优先使用已在服务器验证可拉取的阿里云 FastGPT MinIO 缓存源，其余候选源继续回退。
+- 旧 `.env` 中的 `MINIO_MC_IMAGE` 不再生效，可从模板和配置说明中移除。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+1. 同步更新 `docker-compose.yml`、`deploy/install.sh`、`scripts/backup.sh`、`deploy/eoms.sh`、`scripts/minio_storage.py` 与 `.env.docker.example`。
+2. 在服务器重新执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`。
+3. 安装脚本只选择 MinIO 服务镜像；随后 `minio-init` 复用刚构建的后端镜像完成 bucket 初始化。
+4. 已有 `.env` 可保留 `MINIO_MC_IMAGE`，但新编排不会读取；建议人工删除该 obsolete 配置项。
+
+**验证情况**
+
+- 根据部署日志确认阿里云 FastGPT 的 MinIO 固定 release 已成功拉取，失败仅发生在所有 `mc` 候选镜像。
+- 新增单元测试覆盖对象 key 生成、递归备份、恢复目录创建与路径穿越拒绝。
+- 执行 Shell 语法、Python 编译、全量 Ruff、完整 Pytest、Compose YAML 解析与 `git diff --check`；完整服务启动和真实 MinIO 备份恢复仍需服务器复验。
+
+**已知限制**
+
+- 固定 MinIO release 为上游停止维护前的历史版本，第三方缓存源不保证长期可用。
+- 新备份恢复不保留空目录标记对象之外的本地空目录，也不保留对象自定义元数据；EOMS 业务文件不受影响。
+- 生产环境应评估迁移到持续维护的 S3 兼容对象存储，并先验证数据兼容性与备份恢复。
+
+**关联文档**
+
+- `README.md`：更新目录结构、V1.2.7 说明、对象恢复命令与 MinIO 客户端镜像排障。
+- `docs/部署文档.md`：适用版本更新为 V1.2.7，更新组件表、备份恢复步骤与配置说明。
