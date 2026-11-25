@@ -197,7 +197,7 @@ sudo bash deploy/install.sh
 | `--seed` / `--no-seed` | 强制 / 禁止初始化演示数据 |
 | `--minimal` | 不启动 Prometheus/Grafana/Loki/Promtail，降低资源占用 |
 | `--cn-mirror` | 国内网络加速（Docker、pip、npm） |
-| `--skip-docker-install` | 已自行安装 Docker 时跳过安装 |
+| `--skip-docker-install` | 已自行安装 Docker 时跳过安装；与 `--cn-mirror` 同用时仍配置镜像加速 |
 
 示例：
 
@@ -215,6 +215,8 @@ sudo bash deploy/install.sh --minimal
 > 重复执行安装脚本是安全的：已有 `.env` 的密钥与数据不会被重置，仅重建镜像并滚动启动。
 >
 > V1.2.2 起，pip 自身升级与项目依赖安装统一使用 `PIP_INDEX_URL`；国内网络请使用 `--cn-mirror`，避免 pip 升级阶段绕过镜像源直连 PyPI。
+>
+> V1.2.3 起，`--skip-docker-install` 与 `--cn-mirror` 可同时使用；脚本只跳过 Docker 安装，仍会配置 Docker 镜像加速。
 
 ### 7.2 手动部署
 
@@ -394,6 +396,7 @@ docker compose restart api worker beat
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
+| 启动时拉取 `minio/mc` 等镜像提示 `registry-1.docker.io` 超时 | 使用 V1.2.3 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
 
 ## 13. 版本维护
 

@@ -23,7 +23,7 @@
 #   --minimal         不启动 Prometheus/Grafana/Loki/Promtail
 #   --monitoring      启动监控组件（默认）
 #   --cn-mirror       使用阿里云 Docker 源并配置镜像加速与 pip/npm 国内源
-#   --skip-docker-install  跳过 Docker 安装（已自行安装时使用）
+#   --skip-docker-install  跳过 Docker 安装（已自行安装时使用；不影响 --cn-mirror 配置）
 #   -h, --help        显示帮助
 # ---------------------------------------------------------------------------
 set -Eeuo pipefail
@@ -276,8 +276,10 @@ if (( SKIP_DOCKER )); then
     docker info >/dev/null 2>&1 || die "无法连接 Docker 服务"
 else
     install_docker
-    configure_docker_mirror
 fi
+
+# Docker 已安装时同样需要应用 --cn-mirror 的镜像加速配置
+configure_docker_mirror
 
 command -v curl >/dev/null 2>&1 || apt_install curl ca-certificates
 command -v python3 >/dev/null 2>&1 || apt_install python3

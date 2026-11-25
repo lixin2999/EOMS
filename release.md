@@ -29,6 +29,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.3 | 2026-11-25 | 问题修复 | 修复跳过 Docker 安装时未配置镜像加速，导致 MinIO 等镜像从 Docker Hub 拉取超时 |
 | V1.2.2 | 2026-11-25 | 问题修复 | 修复 Docker 构建 pip 升级绕过镜像源与下载超时，统一依赖源并启用重试和缓存 |
 | V1.2.1 | 2026-11-21 | 问题修复 | 一键部署收尾完善：端口变更同步 origin、IPv6 地址、帮助免 Docker、参数校验与依赖检测 |
 | V1.2.0 | 2026-11-20 | 功能新增 | Ubuntu 22.04 一键 Docker 部署、eoms 运维命令、监控组件按需启停与构建加速 |
@@ -442,3 +443,49 @@
 
 - `README.md`：补充 Docker 构建依赖源说明、pip 超时排障与版本维护约定。
 - `docs/部署文档.md`：适用版本更新为 V1.2.2，补充构建源、超时重试与缓存说明。
+
+---
+
+### V1.2.3（2026-11-25）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+修复一键部署脚本在同时指定 `--skip-docker-install` 与 `--cn-mirror` 时未配置 Docker 镜像加速的问题。已安装 Docker 的服务器现在也会应用 `registry-mirrors`，避免 MinIO、PostgreSQL、Grafana 等基础镜像因 Docker Hub 访问超时而中断部署。
+
+**问题修复**
+
+- **镜像加速分支被跳过**：原 `configure_docker_mirror` 仅在安装 Docker 的分支中调用，使用 `--skip-docker-install` 时不会执行。现将其移到 Docker 安装条件分支之后统一调用。
+- **Docker Hub 拉取超时**：修复后，国内网络执行 `--skip-docker-install --cn-mirror` 时会先写入 `/etc/docker/daemon.json` 并重启 Docker，再构建和拉取镜像。
+
+**变更/优化**
+
+- 脚本参数说明与部署文档明确：`--skip-docker-install` 只跳过安装，不跳过 `--cn-mirror` 的镜像加速配置。
+- 文档补充 Docker Hub 拉取超时的识别与重试命令。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+1. 同步更新 `deploy/install.sh`，无需重建已成功的业务镜像。
+2. 在服务器重新执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`；脚本会配置镜像加速、复用构建缓存并继续拉取基础镜像。
+3. 若服务器已有 `/etc/docker/daemon.json`，脚本会提示跳过自动配置，需人工合并 `registry-mirrors` 后执行 `sudo systemctl restart docker`。
+
+**验证情况**
+
+- 根据部署日志确认业务镜像已构建成功，失败发生在 `minio/mc:latest` 拉取阶段，错误为 `registry-1.docker.io` 请求超时。
+- 核对脚本调用路径，确认原实现导致 `--skip-docker-install` 分支跳过 `configure_docker_mirror`。
+- `bash -n deploy/install.sh` 与 `git diff --check` 通过。
+
+**已知限制**
+
+- 第三方 Docker 镜像加速服务可用性由外部服务决定。
+- 已有 `daemon.json` 时不会自动覆盖，需人工合并镜像地址；脚本会输出提示。
+
+**关联文档**
+
+- `README.md`：补充参数组合说明与 Docker Hub 拉取超时排障。
+- `docs/部署文档.md`：适用版本更新为 V1.2.3，补充已安装 Docker 场景的镜像加速说明。
