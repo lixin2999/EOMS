@@ -29,6 +29,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.6 | 2026-11-25 | 问题修复 | MinIO 与 mc 固定到可用历史 release，优先国内缓存源并彻底移除 latest 依赖 |
 | V1.2.5 | 2026-11-25 | 问题修复 | MinIO 与 mc 改用显式加速镜像并支持多源回退，备份恢复统一复用 Compose 镜像 |
 | V1.2.4 | 2026-11-25 | 问题修复 | 支持安全合并现有 daemon.json 的 registry-mirrors，保留原配置、备份并重启 Docker |
 | V1.2.3 | 2026-11-25 | 问题修复 | 修复跳过 Docker 安装时未配置镜像加速，导致 MinIO 等镜像从 Docker Hub 拉取超时 |
@@ -589,3 +590,52 @@
 
 - `README.md`：更新 MinIO 拉取排障与恢复命令。
 - `docs/部署文档.md`：适用版本更新为 V1.2.5，补充显式镜像、多源回退与配置项说明。
+
+---
+
+### V1.2.6（2026-11-25）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+修复 MinIO `latest` 镜像从各加速源返回 `denied` 或 `manifest unknown` 导致部署中断的问题。MinIO 与 `mc` 改为固定历史 release，优先拉取仍可访问的国内缓存镜像，并保留多个回退源。Compose 与环境模板默认值同步固定版本。
+
+**问题修复**
+
+- **latest 已不可用**：DaoCloud 返回 denied，1ms 与 dockerproxy 返回 manifest unknown。现固定 MinIO `RELEASE.2025-09-07T16-13-09Z`、`mc` `RELEASE.2025-08-13T08-35-41Z`。
+- **候选源缺少可用缓存**：新增轩辕镜像与阿里云 FastGPT 缓存源作为优先候选，后续仍回退 DaoCloud、1ms、dockerproxy 与 Quay。
+- **旧环境仍引用 latest**：安装脚本将 `minio/minio:latest`、`minio/mc:latest` 识别为旧默认值，本地无镜像时不再直连该失效 tag。
+
+**变更/优化**
+
+- `docker-compose.yml` 与 `.env.docker.example` 默认镜像改为固定 release。
+- 成功后仍将完整镜像地址写入 `.env`，备份与恢复继续通过 Compose 复用。
+- 文档明确上游历史版本停止维护，生产环境应规划迁移到持续维护的 S3 兼容实现。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+1. 同步更新 `docker-compose.yml`、`.env.docker.example` 与 `deploy/install.sh`。
+2. 在服务器重新执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`。
+3. 脚本将优先尝试 `docker.xuanyuan.run` 的固定 release 镜像，成功后写入 `.env` 并继续启动。
+4. 若全部候选失败，在 `.env` 设置 `MINIO_IMAGE` 或 `MINIO_MC_IMAGE` 为可用完整地址后重试。
+
+**验证情况**
+
+- 根据部署日志确认三个 `latest` 加速源均失败，错误分别为 denied 与 manifest unknown。
+- 核对固定 release、候选顺序、旧 latest 兼容判断与 Compose 默认值。
+- 三个 Shell 脚本的 `bash -n`、Compose YAML 解析与 `git diff --check` 通过；实际拉取需在服务器复验。
+
+**已知限制**
+
+- 固定 release 为上游停止维护前的历史版本，第三方缓存源不保证长期可用。
+- 生产环境应评估迁移到持续维护的 S3 兼容对象存储，并先验证数据兼容性与备份恢复。
+
+**关联文档**
+
+- `README.md`：更新固定版本说明与 MinIO 镜像失败排障。
+- `docs/部署文档.md`：适用版本更新为 V1.2.6，补充固定 release、缓存源与维护风险说明。

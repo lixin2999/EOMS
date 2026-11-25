@@ -221,6 +221,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.4 起，已有 `/etc/docker/daemon.json` 时会安全合并 `registry-mirrors`，保留其他配置并自动备份。
 >
 > V1.2.5 起，国内部署会为 MinIO 与 `mc` 显式选择加速镜像地址并写入 `.env`，避免 Docker Hub 回退导致拉取失败。
+>
+> V1.2.6 起，MinIO 与 `mc` 固定到历史 release，并优先使用仍可访问的国内缓存镜像，不再使用已失效的 `latest`。
 
 ### 7.2 手动部署
 
@@ -400,7 +402,7 @@ docker compose restart api worker beat
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
-| 启动时拉取 `minio/mc` 等镜像提示 `registry-1.docker.io` 超时 | 使用 V1.2.5 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`；MinIO 镜像会显式走加速源并写入 `.env` |
+| 启动时拉取 `minio/mc` 等镜像提示超时、denied 或 manifest unknown | 使用 V1.2.6 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`；MinIO 会使用固定 release 与国内缓存源 |
 
 ## 13. 版本维护
 

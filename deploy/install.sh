@@ -407,45 +407,41 @@ PY
 
 pull_minio_image() {
     local key=$1
-    local repo=$2
-    local default_ref=$3
+    local default_ref=$2
+    local legacy_ref=$3
+    shift 3
     local configured candidate selected=""
-    local registries=(
-        "docker.m.daocloud.io"
-        "docker.1ms.run"
-        "dockerproxy.net"
-    )
+    local candidates=("$@")
 
     configured="${!key:-$(env_get "$key")}"
-    if [[ -n $configured ]] && docker image inspect "$configured" >/dev/null 2>&1; then
+    if [[ -n $configured && $configured != "$legacy_ref" ]] && docker image inspect "$configured" >/dev/null 2>&1; then
         selected="$configured"
-    elif [[ -n $configured && $configured != "$default_ref" ]]; then
+    elif [[ -n $configured && $configured != "$default_ref" && $configured != "$legacy_ref" ]]; then
         log "拉取配置的 $key：$configured"
         if docker pull "$configured"; then
             selected="$configured"
         else
-            warn "$key 拉取失败，尝试国内加速源：$configured"
+            warn "$key 拉取失败，尝试固定 release 镜像：$configured"
         fi
     fi
 
     if [[ -z $selected ]]; then
-        for registry in "${registries[@]}"; do
-            candidate="$registry/$repo:latest"
+        for candidate in "${candidates[@]}"; do
             if docker image inspect "$candidate" >/dev/null 2>&1; then
                 selected="$candidate"
             else
-                log "尝试 MinIO 加速源：$candidate"
+                log "尝试 MinIO 固定版本镜像：$candidate"
                 if docker pull "$candidate"; then
                     selected="$candidate"
                 else
-                    warn "MinIO 加速源不可用：$registry"
+                    warn "MinIO 镜像源不可用：$candidate"
                 fi
             fi
             [[ -n $selected ]] && break
         done
     fi
 
-    [[ -n $selected ]] || die "$key 所有镜像源均拉取失败，请在 .env 中设置 $key=<完整镜像地址> 后重试"
+    [[ -n $selected ]] || die "$key 所有固定版本镜像均拉取失败，请在 .env 中设置 $key=<完整镜像地址> 后重试"
     env_set "$key=$selected"
     export "$key=$selected"
     ok "$key=$selected"
@@ -618,9 +614,23 @@ log "构建镜像（首次构建需要数分钟，请耐心等待）..."
 docker compose build
 
 if (( CN_MIRROR )); then
-    log "准备 MinIO 镜像（显式加速地址，避免回退 Docker Hub）..."
-    pull_minio_image MINIO_IMAGE minio/minio minio/minio:latest
-    pull_minio_image MINIO_MC_IMAGE minio/mc minio/mc:latest
+    log "准备 MinIO 固定版本镜像（避免已下架的 latest）..."
+    pull_minio_image MINIO_IMAGE \
+        minio/minio:RELEASE.2025-09-07T16-13-09Z \
+        minio/minio:latest \
+        docker.xuanyuan.run/minio/minio:RELEASE.2025-09-07T16-13-09Z \
+        registry.cn-hangzhou.aliyuncs.com/fastgpt/minio:RELEASE.2025-09-07T16-13-09Z \
+        docker.m.daocloud.io/minio/minio:RELEASE.2025-09-07T16-13-09Z \
+        docker.1ms.run/minio/minio:RELEASE.2025-09-07T16-13-09Z \
+        dockerproxy.net/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    pull_minio_image MINIO_MC_IMAGE \
+        minio/mc:RELEASE.2025-08-13T08-35-41Z \
+        minio/mc:latest \
+        docker.xuanyuan.run/minio/mc:RELEASE.2025-08-13T08-35-41Z \
+        docker.m.daocloud.io/minio/mc:RELEASE.2025-08-13T08-35-41Z \
+        docker.1ms.run/minio/mc:RELEASE.2025-08-13T08-35-41Z \
+        dockerproxy.net/minio/mc:RELEASE.2025-08-13T08-35-41Z \
+        quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
 fi
 
 log "启动服务..."
