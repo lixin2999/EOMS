@@ -405,6 +405,52 @@ with open(path, "w", encoding="utf-8", newline="\n") as fh:
 PY
 }
 
+pull_minio_image() {
+    local key=$1
+    local repo=$2
+    local default_ref=$3
+    local configured candidate selected=""
+    local registries=(
+        "docker.m.daocloud.io"
+        "docker.1ms.run"
+        "dockerproxy.net"
+    )
+
+    configured="${!key:-$(env_get "$key")}"
+    if [[ -n $configured ]] && docker image inspect "$configured" >/dev/null 2>&1; then
+        selected="$configured"
+    elif [[ -n $configured && $configured != "$default_ref" ]]; then
+        log "拉取配置的 $key：$configured"
+        if docker pull "$configured"; then
+            selected="$configured"
+        else
+            warn "$key 拉取失败，尝试国内加速源：$configured"
+        fi
+    fi
+
+    if [[ -z $selected ]]; then
+        for registry in "${registries[@]}"; do
+            candidate="$registry/$repo:latest"
+            if docker image inspect "$candidate" >/dev/null 2>&1; then
+                selected="$candidate"
+            else
+                log "尝试 MinIO 加速源：$candidate"
+                if docker pull "$candidate"; then
+                    selected="$candidate"
+                else
+                    warn "MinIO 加速源不可用：$registry"
+                fi
+            fi
+            [[ -n $selected ]] && break
+        done
+    fi
+
+    [[ -n $selected ]] || die "$key 所有镜像源均拉取失败，请在 .env 中设置 $key=<完整镜像地址> 后重试"
+    env_set "$key=$selected"
+    export "$key=$selected"
+    ok "$key=$selected"
+}
+
 detect_public_ip() {
     local url ip=""
     for url in https://api.ipify.org https://ifconfig.me/ip https://ipinfo.io/ip; do
@@ -570,6 +616,12 @@ fi
 
 log "构建镜像（首次构建需要数分钟，请耐心等待）..."
 docker compose build
+
+if (( CN_MIRROR )); then
+    log "准备 MinIO 镜像（显式加速地址，避免回退 Docker Hub）..."
+    pull_minio_image MINIO_IMAGE minio/minio minio/minio:latest
+    pull_minio_image MINIO_MC_IMAGE minio/mc minio/mc:latest
+fi
 
 log "启动服务..."
 docker compose up -d --remove-orphans

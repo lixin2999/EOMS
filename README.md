@@ -219,6 +219,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.3 起，`--skip-docker-install` 与 `--cn-mirror` 可同时使用；脚本只跳过 Docker 安装，仍会配置 Docker 镜像加速。
 >
 > V1.2.4 起，已有 `/etc/docker/daemon.json` 时会安全合并 `registry-mirrors`，保留其他配置并自动备份。
+>
+> V1.2.5 起，国内部署会为 MinIO 与 `mc` 显式选择加速镜像地址并写入 `.env`，避免 Docker Hub 回退导致拉取失败。
 
 ### 7.2 手动部署
 
@@ -352,9 +354,9 @@ docker compose exec -T db pg_restore -U eoms -d eoms --clean --if-exists --no-ow
     < /tmp/eoms-restore/db.dump
 
 # 3. 恢复对象存储
-docker run --rm --network eoms-net \
+docker compose run --rm --no-deps \
     -e MINIO_ROOT_USER=eoms -e MINIO_ROOT_PASSWORD='***' -e MINIO_BUCKET=eoms \
-    -v /tmp/eoms-restore/minio:/backup --entrypoint /bin/sh minio/mc:latest -c '
+    -v /tmp/eoms-restore/minio:/backup --entrypoint /bin/sh minio-init -c '
         mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
         mc mirror --overwrite /backup "local/$MINIO_BUCKET"
     '
@@ -398,7 +400,7 @@ docker compose restart api worker beat
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
 | 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
-| 启动时拉取 `minio/mc` 等镜像提示 `registry-1.docker.io` 超时 | 使用 V1.2.4 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`；已有 daemon.json 会自动合并并备份 |
+| 启动时拉取 `minio/mc` 等镜像提示 `registry-1.docker.io` 超时 | 使用 V1.2.5 或更新版本的安装脚本，执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`；MinIO 镜像会显式走加速源并写入 `.env` |
 
 ## 13. 版本维护
 

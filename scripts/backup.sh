@@ -40,14 +40,13 @@ docker compose exec -T db \
     > "$WORK_DIR/db.dump"
 
 echo "[backup] 2/4 镜像 MinIO 对象存储..."
-docker run --rm \
-    --network eoms-net \
+docker compose run --rm --no-deps \
     -e MINIO_ROOT_USER="${MINIO_ROOT_USER:-eoms}" \
     -e MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:?缺少 MINIO_ROOT_PASSWORD}" \
     -e MINIO_BUCKET="${MINIO_BUCKET:-eoms}" \
     -v "$WORK_DIR:/backup" \
     --entrypoint /bin/sh \
-    minio/mc:latest -c '
+    minio-init -c '
         set -eu
         mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
         if mc ls "local/$MINIO_BUCKET" >/dev/null 2>&1; then

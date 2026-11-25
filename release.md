@@ -29,6 +29,7 @@
 
 | 版本号 | 发布日期 | 类型 | 摘要 |
 | --- | --- | --- | --- |
+| V1.2.5 | 2026-11-25 | 问题修复 | MinIO 与 mc 改用显式加速镜像并支持多源回退，备份恢复统一复用 Compose 镜像 |
 | V1.2.4 | 2026-11-25 | 问题修复 | 支持安全合并现有 daemon.json 的 registry-mirrors，保留原配置、备份并重启 Docker |
 | V1.2.3 | 2026-11-25 | 问题修复 | 修复跳过 Docker 安装时未配置镜像加速，导致 MinIO 等镜像从 Docker Hub 拉取超时 |
 | V1.2.2 | 2026-11-25 | 问题修复 | 修复 Docker 构建 pip 升级绕过镜像源与下载超时，统一依赖源并启用重试和缓存 |
@@ -539,3 +540,52 @@
 
 - `README.md`：更新 Docker Hub 超时排障版本与 daemon.json 自动合并说明。
 - `docs/部署文档.md`：适用版本更新为 V1.2.4，补充自动合并、备份与失败处理说明。
+
+---
+
+### V1.2.5（2026-11-25）
+
+**版本类型**：问题修复（Bug Fix）
+
+**变更概述**
+
+修复 Docker daemon 镜像加速已生效但 MinIO 仍回退 Docker Hub 的问题。国内部署现在会显式拉取 MinIO 与 `mc` 的完整加速镜像地址，按多个加速源依次回退，并将成功地址写入 `.env`。备份与恢复也改为通过 Compose 运行 `minio-init`，统一使用已配置的 `mc` 镜像。
+
+**问题修复**
+
+- **MinIO 仍回退 Docker Hub**：原 Compose 使用 `minio/minio:latest`、`minio/mc:latest`，加速源未命中时会回退官方仓库。现改为 `MINIO_IMAGE`、`MINIO_MC_IMAGE` 可配置，并在 `--cn-mirror` 下显式选择加速地址。
+- **备份恢复再次拉取官方 mc**：原脚本硬编码 `minio/mc:latest`。现统一使用 `docker compose run ... minio-init`，复用部署时选定的镜像。
+
+**变更/优化**
+
+- 支持 `docker.m.daocloud.io`、`docker.1ms.run`、`dockerproxy.net` 三个显式加速源依次回退。
+- 优先复用本地镜像或 `.env` 中自定义的完整镜像地址；自定义地址失败后再尝试默认加速源。
+- 成功选择后写入 `.env` 并导出当前进程变量；全部失败时终止，并提示人工设置完整镜像地址。
+- `.env.docker.example` 增加 `MINIO_IMAGE`、`MINIO_MC_IMAGE` 配置项。
+
+**数据库变更**
+
+- 无数据库迁移。
+
+**升级说明**
+
+1. 同步更新 `docker-compose.yml`、`.env.docker.example`、`deploy/install.sh`、`deploy/eoms.sh` 与 `scripts/backup.sh`。
+2. 在服务器重新执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror`。
+3. 脚本会在业务镜像构建后显式拉取 MinIO 与 `mc`，输出选中的完整镜像地址并继续启动。
+4. 若全部加速源失败，在 `.env` 设置 `MINIO_IMAGE` 或 `MINIO_MC_IMAGE` 为可用完整地址后重试。
+
+**验证情况**
+
+- 根据部署日志确认 `daemon.json` 已成功合并、备份并重启，但 MinIO 仍请求 `registry-1.docker.io` 且连接被拒绝。
+- 核对 Compose、安装、备份与恢复路径均已参数化或复用 `minio-init`。
+- 三个 Shell 脚本的 `bash -n`、Compose YAML 解析与 `git diff --check` 通过；本机未安装 Docker，完整 Compose 校验与镜像拉取需在服务器执行。
+
+**已知限制**
+
+- 第三方镜像加速源可能缓存滞后或暂时不可用，脚本会依次回退。
+- 加速源中的镜像 tag 与 Docker Hub 是否同步取决于第三方服务。
+
+**关联文档**
+
+- `README.md`：更新 MinIO 拉取排障与恢复命令。
+- `docs/部署文档.md`：适用版本更新为 V1.2.5，补充显式镜像、多源回退与配置项说明。

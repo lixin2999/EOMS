@@ -164,7 +164,7 @@ services:
     logging: *default-logging
 
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:-minio/minio:latest}
     container_name: eoms-minio
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -177,7 +177,7 @@ services:
     logging: *default-logging
 
   minio-init:
-    image: minio/mc:latest
+    image: ${MINIO_MC_IMAGE:-minio/mc:latest}
     container_name: eoms-minio-init
     depends_on:
       - minio
