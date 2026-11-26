@@ -54,6 +54,8 @@ EOMS/
 ├── migrations/             # Alembic 迁移
 ├── scripts/
 │   ├── seed.py             # 演示数据初始化（--reset 重建）
+│   ├── clear_demo.py       # 仅清理 DEMO 租户（默认预演，--yes 执行）
+│   ├── create_super_admin.py # 幂等创建超级管理员（默认不重置密码）
 │   ├── minio_storage.py    # bucket 初始化、对象备份与恢复
 │   └── backup.sh           # 数据库 + 对象存储备份
 ├── tests/                  # 接口测试与权限隔离专项
@@ -145,7 +147,55 @@ npm run build   # 产物在 web/dist
 | `auditor` | AUDITOR | COMPANY | 审计，全公司审计与追溯 |
 | `employee` | EMPLOYEE | SELF | 普通员工，报销/请假/发文 |
 
-> `seed.py` 使用固定演示数据，可通过 `--no-snapshot` 跳过报表快照生成；`--reset` 在 `EOMS_ENV=prod` 下会被拒绝。
+> `seed.py` 使用固定演示数据，可通过 `--no-snapshot` 跳过报表快照生成；`--reset` 会删除全库数据，在 `EOMS_ENV=prod` 下会被拒绝。不要用它清理演示数据。
+
+### 4.5 清理演示数据与创建超级管理员
+
+两个脚本要求数据库已完成 Alembic 迁移，不会自动建表。执行清理前必须先备份数据库和对象存储。
+
+**Windows 本地**
+
+```powershell
+# 先迁移，再预演；预演不会删除任何数据
+.venv\Scripts\python.exe -m alembic upgrade head
+.venv\Scripts\python.exe scripts\clear_demo.py
+
+# 确认预演结果后执行；该操作不可撤销
+.venv\Scripts\python.exe scripts\clear_demo.py --yes
+
+# 仅清理数据库和缓存，保留附件对象
+.venv\Scripts\python.exe scripts\clear_demo.py --yes --keep-files
+
+# 在空业务库中创建公司、根部门和超级管理员，按提示输入密码
+.venv\Scripts\python.exe scripts\create_super_admin.py --company-code EOMS --company-name "示例公司" --username admin
+
+# 仅重置已有账号密码时显式添加
+.venv\Scripts\python.exe scripts\create_super_admin.py --company-code EOMS --username admin --reset-password
+```
+
+**Docker Compose**
+
+```bash
+# 容器启动时通常已完成迁移；也可显式确认
+docker compose exec api alembic upgrade head
+
+# 默认预演，确认后再加 --yes
+docker compose exec api python scripts/clear_demo.py
+docker compose exec api python scripts/clear_demo.py --yes
+
+# 不要添加 -T，否则无法交互输入密码
+docker compose exec api python scripts/create_super_admin.py \
+  --company-code EOMS --company-name "示例公司" --username admin
+```
+
+安全规则：
+
+- `clear_demo.py` 只删除公司编码为 `DEMO` 的租户数据，保留全局权限、内置角色、系统参数和其他公司；共享附件对象不会被删除。数据库提交后才删除附件，附件删除失败不会回滚数据库，需按日志检查并清理残留对象。
+- `create_super_admin.py` 会补齐权限、内置角色及缺失授权，可重复执行。已有账号默认只补齐超级管理员标志、启用状态和 `ADMIN` 角色，不修改原密码。
+- 新账号或 `--reset-password` 需要密码；默认最少 8 位，包含大写字母、小写字母、数字、特殊字符中的至少三类，且不能包含用户名。密码通过交互输入或 `EOMS_ADMIN_PASSWORD` 环境变量提供，不要放在命令行参数中。
+- 如果演示租户已有 `admin`，必须先清理 DEMO 或改用其他用户名，再为正式公司创建 `admin`；脚本禁止跨公司接管已有用户名。
+
+完整流程、非交互初始化和回滚说明见 [`docs/部署文档.md`](docs/部署文档.md#45-初始化数据)。
 
 ## 5. 数据库迁移
 
@@ -234,6 +284,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.10 起，刷新与登出接口兼容空请求体，前端刷新/登出统一发送 `{}`；仅刷新接口 401 会判定登录过期，422、5xx 与网络异常保留会话并提示“会话刷新失败”，同时消除并发认证失败的重复跳转与提示。
 >
 > V1.2.11 修复幂等中间件重建响应时覆盖同名 `Set-Cookie` 的问题。旧版登录请求经过幂等中间件后只写入 `eoms_csrf`，导致浏览器沿用旧 Access/Refresh Token 并立即掉线；认证接口现已跳过业务幂等，登录、刷新和登出会完整返回全部会话 Cookie 指令。
+>
+> V1.3.0 新增 `clear_demo.py` 与 `create_super_admin.py`：前者只清理 `DEMO` 租户且默认预演，后者幂等创建超级管理员且默认不修改已有密码。
 
 ### 7.2 手动部署
 
@@ -413,7 +465,8 @@ docker compose restart api worker beat
 | 刷新或登出返回 422 `Field required` | 使用 V1.2.10 或更新版本；旧版前端发送空请求体与后端 DTO 不兼容 | 重建前后端；刷新与登出应发送 `{}`，新后端也兼容完全省略请求体 |
 | 写操作返回 403「CSRF 校验失败」 | 前端需带 `X-CSRF-Token`（值取自 `eoms_csrf` Cookie）；跨域部署检查 CORS 是否放行该请求头 |
 | HTTPS 下登录后立即掉线 | 确认 `EOMS_COOKIE_SECURE=true` 且反代透传 `X-Forwarded-Proto`，Cookie 未被浏览器丢弃 |
-| 演示数据错乱 | 重新执行 `python scripts/seed.py --reset` |
+| 演示数据错乱 | 不要执行 `seed.py --reset`；先备份，再运行 `python scripts/clear_demo.py` 预演，确认仅包含 DEMO 租户后添加 `--yes` 执行。其他公司、全局权限、内置角色和系统参数会保留 |
+| 空业务库无法登录 | 完成 `alembic upgrade head` 后运行 `python scripts/create_super_admin.py --company-code EOMS --company-name "公司名称" --username admin`，按提示输入强密码 |
 | `eoms seed` 或报表快照报 `GroupingError`、`project_id must appear in the GROUP BY clause` | 使用 V1.2.9 或更新版本并重建后端服务；修复后重新执行 `eoms seed --yes`，无需数据库迁移 |
 | Docker 构建提示 `files.pythonhosted.org` 读取超时 | 使用 V1.2.2 或更新版本的 Dockerfile；国内服务器执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
 | 启动时拉取 `minio/mc` 等镜像提示超时、denied 或 manifest unknown | 使用 V1.2.7 或更新版本；初始化与备份恢复已改用 `eoms-api` 内置 SDK，只需拉取 MinIO 服务镜像。执行 `sudo bash deploy/install.sh --skip-docker-install --cn-mirror` |
