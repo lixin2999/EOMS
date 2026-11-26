@@ -88,8 +88,9 @@ def login(payload: LoginIn, request: Request, response: Response, db: DbSession)
 
 
 @router.post("/refresh", summary="刷新令牌")
-def refresh(payload: RefreshIn, request: Request, response: Response, db: DbSession) -> dict:
-    token = payload.refresh_token or request.cookies.get(settings.refresh_cookie_name)
+def refresh(request: Request, response: Response, db: DbSession, payload: RefreshIn | None = None) -> dict:
+    # 浏览器仅依赖 HttpOnly Cookie，允许不发送 JSON 请求体；旧客户端仍可显式传 refresh_token。
+    token = (payload.refresh_token if payload else None) or request.cookies.get(settings.refresh_cookie_name)
     if not token:
         raise UnauthorizedError("登录已失效，请重新登录")
     data = auth_service.refresh(db, token, get_client_ip(request), get_user_agent(request))
@@ -98,13 +99,19 @@ def refresh(payload: RefreshIn, request: Request, response: Response, db: DbSess
 
 
 @router.post("/logout", summary="登出")
-def logout(payload: LogoutIn, request: Request, response: Response, db: DbSession, user: CurrentUser) -> dict:
+def logout(
+    request: Request,
+    response: Response,
+    db: DbSession,
+    user: CurrentUser,
+    payload: LogoutIn | None = None,
+) -> dict:
     token_payload = getattr(request.state, "token_payload", {})
     auth_service.logout(
         user,
         getattr(request.state, "jti", ""),
         int(token_payload.get("exp", 0)),
-        payload.refresh_token or request.cookies.get(settings.refresh_cookie_name),
+        (payload.refresh_token if payload else None) or request.cookies.get(settings.refresh_cookie_name),
     )
     _clear_session_cookies(response)
     return ok(None, "已安全退出")

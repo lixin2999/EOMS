@@ -3,7 +3,7 @@ import { api, rawGet } from './http'
 export const authApi = {
   captcha: () => api.get('/auth/captcha'),
   login: (payload) => api.post('/auth/login', payload),
-  logout: () => api.post('/auth/logout', null),
+  logout: () => api.post('/auth/logout', {}),
   me: () => api.get('/auth/me'),
   changePassword: (payload) => api.put('/auth/password', payload)
 }

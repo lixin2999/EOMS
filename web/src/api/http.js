@@ -33,6 +33,8 @@ const http = axios.create({
 
 let refreshing = null
 let onUnauthorized = null
+let redirectingToLogin = false
+let authFailureNotified = false
 
 export function setUnauthorizedHandler(handler) {
   onUnauthorized = handler
@@ -40,6 +42,8 @@ export function setUnauthorizedHandler(handler) {
 
 function redirectToLogin() {
   tokenStore.clear()
+  if (redirectingToLogin) return
+  redirectingToLogin = true
   if (onUnauthorized) onUnauthorized()
 }
 
@@ -69,6 +73,8 @@ function fieldMessage(data) {
 
 http.interceptors.response.use(
   (response) => {
+    redirectingToLogin = false
+    authFailureNotified = false
     if (response.config.responseType === 'blob') return response
     const body = response.data
     if (body && typeof body === 'object' && 'code' in body) {
@@ -94,8 +100,17 @@ http.interceptors.response.use(
         await refreshAccess()
         return http.request(config)
       } catch (refreshError) {
-        redirectToLogin()
-        ElMessage.warning('登录已过期，请重新登录')
+        if (refreshError.response?.status === 401) {
+          redirectToLogin()
+          if (!authFailureNotified) {
+            authFailureNotified = true
+            ElMessage.warning('登录已过期，请重新登录')
+          }
+        } else if (!authFailureNotified) {
+          // 422/5xx/网络异常不等于登录过期，保留当前会话并允许后续请求重试。
+          authFailureNotified = true
+          ElMessage.error('会话刷新失败，请稍后重试')
+        }
         return Promise.reject(refreshError)
       }
     }
@@ -114,8 +129,8 @@ http.interceptors.response.use(
 async function refreshAccess() {
   if (refreshing) return refreshing
   refreshing = (async () => {
-    // refresh token 在 HttpOnly Cookie 中，这里不带 body；写操作需带 CSRF 头。
-    const resp = await axios.post(`${BASE}/auth/refresh`, null, {
+    // refresh token 在 HttpOnly Cookie 中；发送空 JSON 对象以满足后端 DTO，写操作带 CSRF 头。
+    const resp = await axios.post(`${BASE}/auth/refresh`, {}, {
       timeout: 15000,
       withCredentials: true,
       headers: { 'X-CSRF-Token': tokenStore.csrf }

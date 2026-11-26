@@ -99,6 +99,27 @@ def test_refresh_token_rotates(client):
     ).status_code == 200
 
 
+def test_refresh_accepts_empty_body_from_cookie(client):
+    client.post("/api/v1/auth/login", json=_login_payload("pm"))
+    refreshed = client.post("/api/v1/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["data"]["csrf_token"]
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+
+def test_logout_accepts_empty_body_and_clears_cookies(client):
+    logged = client.post("/api/v1/auth/login", json=_login_payload("finance"))
+    assert logged.status_code == 200, logged.text
+    csrf_token = logged.json()["data"]["csrf_token"]
+
+    logged_out = client.post("/api/v1/auth/logout", headers={"X-CSRF-Token": csrf_token})
+    assert logged_out.status_code == 200, logged_out.text
+    cookies = logged_out.headers.get_list("set-cookie")
+    for name in ("eoms_at", "eoms_rt", "eoms_csrf"):
+        assert any(cookie.startswith(f"{name}=") and "Max-Age=0" in cookie for cookie in cookies)
+    assert client.get("/api/v1/auth/me").status_code == 401
+
+
 def test_logout_blacklists_access_token(client, token_for):
     token = token_for("auditor")
     headers = {"Authorization": f"Bearer {token}"}
