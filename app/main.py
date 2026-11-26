@@ -36,6 +36,13 @@ logger = get_logger("eoms.main")
 
 SKIP_RATE_LIMIT = {"/healthz", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json", "/"}
 IDEMPOTENT_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# 认证接口自行处理重试与令牌轮换，不参与业务幂等；尤其不能缓存或重建登录/刷新响应。
+IDEMPOTENCY_EXEMPT = {
+    f"{settings.api_prefix}/auth/login",
+    f"{settings.api_prefix}/auth/refresh",
+    f"{settings.api_prefix}/auth/logout",
+    f"{settings.api_prefix}/auth/password",
+}
 CSRF_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # 建立会话前无凭证可用：登录/刷新/验证码不参与 CSRF 校验（避免旧 Cookie 阻断重新登录）
 CSRF_EXEMPT = {
@@ -177,7 +184,8 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     """幂等键：写操作携带 Idempotency-Key 时返回首次成功响应。"""
 
     async def dispatch(self, request: Request, call_next):
-        if request.method not in IDEMPOTENT_METHODS:
+        path = request.url.path
+        if request.method not in IDEMPOTENT_METHODS or path in IDEMPOTENCY_EXEMPT:
             return await call_next(request)
         key = (request.headers.get("idempotency-key") or "").strip()
         if not key or len(key) > 128:
@@ -216,33 +224,30 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         chunks = [chunk async for chunk in response.body_iterator]
         raw = b"".join(chunks)
-        headers = {
-            name: value
-            for name, value in response.headers.items()
-            if name.lower() not in {"content-length", "content-encoding"}
-        }
+        headers = [
+            (name, value)
+            for name, value in response.raw_headers
+            if name.lower() not in {b"content-length", b"content-encoding"}
+        ]
         if response.status_code < 400 and raw:
             try:
                 parsed: Any = json.loads(raw)
             except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
-                return Response(
-                    content=raw,
-                    status_code=response.status_code,
-                    headers=headers,
-                    media_type=response.media_type,
-                )
+                rebuilt = Response(content=raw, status_code=response.status_code, media_type=response.media_type)
+                rebuilt.raw_headers = headers
+                rebuilt.headers["Content-Length"] = str(len(raw))
+                return rebuilt
             cache.set_json(
                 cache_key,
                 {"status": response.status_code, "body": parsed},
                 settings.idempotency_ttl,
             )
             _persist_idempotency(company_id, user_id, key, request, response.status_code, parsed)
-        return Response(
-            content=raw,
-            status_code=response.status_code,
-            headers=headers,
-            media_type=response.media_type,
-        )
+        rebuilt = Response(content=raw, status_code=response.status_code, media_type=response.media_type)
+        # 保留原始头列表，避免 dict 覆盖同名 Set-Cookie 等响应头。
+        rebuilt.raw_headers = headers
+        rebuilt.headers["Content-Length"] = str(len(raw))
+        return rebuilt
 
 
 def _persist_idempotency(

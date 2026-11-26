@@ -232,6 +232,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.9 起，营收报表严格按所选期间/项目/客户维度分组，兼容 PostgreSQL 的严格分组校验，修复演示数据初始化与报表快照生成时的 `GroupingError`。
 >
 > V1.2.10 起，刷新与登出接口兼容空请求体，前端刷新/登出统一发送 `{}`；仅刷新接口 401 会判定登录过期，422、5xx 与网络异常保留会话并提示“会话刷新失败”，同时消除并发认证失败的重复跳转与提示。
+>
+> V1.2.11 修复幂等中间件重建响应时覆盖同名 `Set-Cookie` 的问题。旧版登录请求经过幂等中间件后只写入 `eoms_csrf`，导致浏览器沿用旧 Access/Refresh Token 并立即掉线；认证接口现已跳过业务幂等，登录、刷新和登出会完整返回全部会话 Cookie 指令。
 
 ### 7.2 手动部署
 
@@ -406,6 +408,7 @@ docker compose restart api worker beat
 | 上传文件失败 | 本地确认 `EOMS_STORAGE_BACKEND=local` 且 `.data/storage` 可写；容器确认 MinIO 与 `minio-init` 成功 |
 | 异步任务不执行 | 本地可设 `EOMS_CELERY_ALWAYS_EAGER=true`；容器检查 `redis` 与 `worker` 日志 |
 | 登录提示锁定 | 等待 `EOMS_LOGIN_LOCK_MINUTES`，或清理 Redis 中登录失败计数 |
+| 登录成功后立即提示“登录已过期”或刷新页面回登录页 | V1.2.10 及更早版本的幂等中间件可能丢失同名 `Set-Cookie`，仅保留 CSRF Cookie | 升级到 V1.2.11 并同时重建 API/前端；确认登录响应包含 `eoms_at`、`eoms_rt`、`eoms_csrf` 三个 `Set-Cookie`。清除旧 Cookie 后重新登录 |
 | 前端 401 循环 | 先查看 `/api/v1/auth/refresh` 的状态码：401 表示刷新凭证失效，应重新登录；422 表示请求体或参数契约异常，5xx/网络异常表示刷新服务暂不可用。V1.2.10 起后两类不会误报登录过期。必要时清除 `eoms_at` / `eoms_rt` / `eoms_csrf` 后重新登录，并确认后端时间与 `EOMS_TIMEZONE` 一致 |
 | 刷新或登出返回 422 `Field required` | 使用 V1.2.10 或更新版本；旧版前端发送空请求体与后端 DTO 不兼容 | 重建前后端；刷新与登出应发送 `{}`，新后端也兼容完全省略请求体 |
 | 写操作返回 403「CSRF 校验失败」 | 前端需带 `X-CSRF-Token`（值取自 `eoms_csrf` Cookie）；跨域部署检查 CORS 是否放行该请求头 |

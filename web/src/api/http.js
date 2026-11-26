@@ -57,7 +57,7 @@ http.interceptors.request.use((config) => {
   if (['post', 'put', 'delete', 'patch'].includes(method)) {
     const csrf = tokenStore.csrf
     if (csrf && !config.headers['X-CSRF-Token']) config.headers['X-CSRF-Token'] = csrf
-    if (!config.headers['Idempotency-Key'] && !config.headers['idempotency-key']) {
+    if (!config.headers['Idempotency-Key'] && !config.headers['idempotency-key'] && !config.url?.startsWith('/auth/')) {
       config.headers['Idempotency-Key'] = newIdempotencyKey()
     }
   }

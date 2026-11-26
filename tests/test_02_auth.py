@@ -58,6 +58,73 @@ def test_login_and_profile(client):
     ).status_code == 200
 
 
+def test_login_with_idempotency_key_preserves_session_cookies(client):
+    client.cookies.clear()
+    headers = {"Idempotency-Key": "auth-login-regression"}
+    first = client.post("/api/v1/auth/login", json=_login_payload("pm"), headers=headers)
+    assert first.status_code == 200, first.text
+    first_cookies = first.headers.get_list("set-cookie")
+    assert {cookie.split("=", 1)[0] for cookie in first_cookies} == {"eoms_at", "eoms_rt", "eoms_csrf"}
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+    # 认证请求不参与业务幂等，即使携带相同键也不能回放首次登录响应。
+    second = client.post("/api/v1/auth/login", json=_login_payload("pm"), headers=headers)
+    assert second.status_code == 200, second.text
+    assert len(second.headers.get_list("set-cookie")) == 3
+    assert second.json()["data"]["csrf_token"] != first.json()["data"]["csrf_token"]
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+
+def test_refresh_and_logout_ignore_idempotency_header(client):
+    client.cookies.clear()
+    logged = client.post("/api/v1/auth/login", json=_login_payload("finance"))
+    assert logged.status_code == 200, logged.text
+
+    refreshed = client.post(
+        "/api/v1/auth/refresh",
+        json={},
+        headers={"Idempotency-Key": "auth-refresh-regression"},
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert {cookie.split("=", 1)[0] for cookie in refreshed.headers.get_list("set-cookie")} == {
+        "eoms_at",
+        "eoms_rt",
+        "eoms_csrf",
+    }
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+    logged_out = client.post(
+        "/api/v1/auth/logout",
+        json={},
+        headers={
+            "Idempotency-Key": "auth-logout-regression",
+            "X-CSRF-Token": refreshed.json()["data"]["csrf_token"],
+        },
+    )
+    assert logged_out.status_code == 200, logged_out.text
+    cleared = logged_out.headers.get_list("set-cookie")
+    for name in ("eoms_at", "eoms_rt", "eoms_csrf"):
+        assert any(cookie.startswith(f"{name}=") and "Max-Age=0" in cookie for cookie in cleared)
+    assert client.get("/api/v1/auth/me").status_code == 401
+
+
+def test_idempotency_rebuild_preserves_all_set_cookie_headers(client, auth, monkeypatch):
+    from app.main import IDEMPOTENCY_EXEMPT
+
+    # 单独验证通用响应重建：临时让登录经过幂等中间件，确认同名头不会被覆盖。
+    monkeypatch.setattr("app.main.IDEMPOTENCY_EXEMPT", IDEMPOTENCY_EXEMPT - {"/api/v1/auth/login"})
+    client.cookies.clear()
+    response = client.post(
+        "/api/v1/auth/login",
+        json=_login_payload("pm"),
+        # 携带有效 Bearer Token，确保中间件进入 _forward，而不是因无令牌提前跳过。
+        headers={**auth("pm"), "Idempotency-Key": "cookie-header-rebuild-regression"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.headers.get_list("set-cookie")) == 3
+    assert client.get("/api/v1/auth/me").status_code == 200
+
+
 def test_login_rejects_invalid_captcha(client):
     response = client.post(
         "/api/v1/auth/login",
