@@ -26,6 +26,7 @@ from app.utils.datetime import now
 
 logger = get_logger("eoms.auth")
 _DUMMY_HASH = hash_password("eoms-dummy-password", username="dummy")
+_INVALID_CREDENTIALS_MESSAGE = "用户名或者密码错误，请重新输入或者联系管理员"
 
 
 # ---------------------------------------------------------------- 验证码
@@ -152,7 +153,7 @@ def login(
         verify_password(password, _DUMMY_HASH, username="dummy")
         _record_failure(username)
         _write_login_log(db, None, username, ip, ua, False, "用户不存在")
-        raise UnauthorizedError("用户名或密码错误")
+        raise UnauthorizedError(_INVALID_CREDENTIALS_MESSAGE)
 
     if user.status != UserStatus.ACTIVE.value:
         _write_login_log(db, user, user.username, ip, ua, False, "账号已停用")
@@ -166,9 +167,7 @@ def login(
     if not verify_password(password, user.password_hash, username=user.username):
         _record_failure(username)
         _write_login_log(db, user, user.username, ip, ua, False, "密码错误")
-        remaining = settings.login_max_fail - int(cache.get(_fail_key(username)) or 0)
-        hint = f"，还可尝试 {remaining} 次" if remaining > 0 else ""
-        raise UnauthorizedError(f"用户名或密码错误{hint}")
+        raise UnauthorizedError(_INVALID_CREDENTIALS_MESSAGE)
 
     _clear_failure(username)
     user.last_login_at = now()

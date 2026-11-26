@@ -116,7 +116,12 @@ http.interceptors.response.use(
     }
 
     if (response.status === 401) {
-      redirectToLogin()
+      // 登录凭证错误由登录页展示后端文案；其他接口的 401 仍按会话过期处理。
+      if (config.url === '/auth/login') {
+        ElMessage.error(message)
+      } else {
+        redirectToLogin()
+      }
     } else if (response.status === 403 && String(message).includes('初始密码')) {
       window.location.hash = '#/change-password'
     } else {

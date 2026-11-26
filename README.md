@@ -286,6 +286,8 @@ sudo bash deploy/install.sh --minimal
 > V1.2.11 修复幂等中间件重建响应时覆盖同名 `Set-Cookie` 的问题。旧版登录请求经过幂等中间件后只写入 `eoms_csrf`，导致浏览器沿用旧 Access/Refresh Token 并立即掉线；认证接口现已跳过业务幂等，登录、刷新和登出会完整返回全部会话 Cookie 指令。
 >
 > V1.3.0 新增 `clear_demo.py` 与 `create_super_admin.py`：前者只清理 `DEMO` 租户且默认预演，后者幂等创建超级管理员且默认不修改已有密码。
+>
+> V1.3.1 修复登录时用户名或密码错误没有提示的问题；登录接口现在显示“用户名或者密码错误，请重新输入或者联系管理员”，其他接口的会话过期处理保持不变。
 
 ### 7.2 手动部署
 
@@ -460,6 +462,7 @@ docker compose restart api worker beat
 | 上传文件失败 | 本地确认 `EOMS_STORAGE_BACKEND=local` 且 `.data/storage` 可写；容器确认 MinIO 与 `minio-init` 成功 |
 | 异步任务不执行 | 本地可设 `EOMS_CELERY_ALWAYS_EAGER=true`；容器检查 `redis` 与 `worker` 日志 |
 | 登录提示锁定 | 等待 `EOMS_LOGIN_LOCK_MINUTES`，或清理 Redis 中登录失败计数 |
+| 用户名不存在或密码错误但没有提示 | 升级到 V1.3.1 并同时重建 API/前端；确认登录接口返回 401 且页面显示“用户名或者密码错误，请重新输入或者联系管理员” |
 | 登录成功后立即提示“登录已过期”或刷新页面回登录页 | V1.2.10 及更早版本的幂等中间件可能丢失同名 `Set-Cookie`，仅保留 CSRF Cookie | 升级到 V1.2.11 并同时重建 API/前端；确认登录响应包含 `eoms_at`、`eoms_rt`、`eoms_csrf` 三个 `Set-Cookie`。清除旧 Cookie 后重新登录 |
 | 前端 401 循环 | 先查看 `/api/v1/auth/refresh` 的状态码：401 表示刷新凭证失效，应重新登录；422 表示请求体或参数契约异常，5xx/网络异常表示刷新服务暂不可用。V1.2.10 起后两类不会误报登录过期。必要时清除 `eoms_at` / `eoms_rt` / `eoms_csrf` 后重新登录，并确认后端时间与 `EOMS_TIMEZONE` 一致 |
 | 刷新或登出返回 422 `Field required` | 使用 V1.2.10 或更新版本；旧版前端发送空请求体与后端 DTO 不兼容 | 重建前后端；刷新与登出应发送 `{}`，新后端也兼容完全省略请求体 |

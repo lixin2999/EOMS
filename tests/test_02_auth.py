@@ -7,6 +7,7 @@ from app.core.security import check_password_strength, create_token, hash_passwo
 from app.services.iam import auth as auth_service
 
 DEMO_PASSWORD = "Eoms@2026"
+_INVALID_CREDENTIALS_MESSAGE = "用户名或者密码错误，请重新输入或者联系管理员"
 
 
 def _captcha() -> tuple[str, str]:
@@ -145,10 +146,24 @@ def test_login_wrong_password_and_lock(client):
     for _ in range(5):
         response = client.post("/api/v1/auth/login", json=_login_payload(username, "WrongPass1"))
         assert response.status_code == 401
+        assert response.json()["code"] == 1001
+        assert response.json()["msg"] == _INVALID_CREDENTIALS_MESSAGE
+        assert not response.headers.get_list("set-cookie")
 
     locked = client.post("/api/v1/auth/login", json=_login_payload(username))
     assert locked.status_code == 423
     assert locked.json()["code"] == 1009
+    cache.delete(f"login:fail:{username}")
+
+
+def test_login_unknown_user_returns_credential_error(client):
+    username = "no-such-eoms-user"
+    cache.delete(f"login:fail:{username}")
+    response = client.post("/api/v1/auth/login", json=_login_payload(username, DEMO_PASSWORD))
+    assert response.status_code == 401
+    assert response.json()["code"] == 1001
+    assert response.json()["msg"] == _INVALID_CREDENTIALS_MESSAGE
+    assert not response.headers.get_list("set-cookie")
     cache.delete(f"login:fail:{username}")
 
 
