@@ -2,8 +2,8 @@
   <div class="change-password-page">
     <div class="change-card">
       <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px">
-        <div class="brand-mark">E</div>
-        <strong>EOMS 账号安全</strong>
+        <img class="brand-mark" src="/brand/dongyan-logo.jpg" alt="东研智联 Logo" />
+        <strong>东研智联账号安全</strong>
       </div>
       <h2 style="margin: 14px 0 6px; font-size: 22px">修改登录密码</h2>
       <p class="muted" style="margin: 0 0 22px; font-size: 13px; line-height: 1.7">

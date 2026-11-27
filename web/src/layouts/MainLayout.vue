@@ -2,8 +2,8 @@
   <div class="app-shell">
     <aside class="sidebar" :class="{ collapsed }">
       <div class="sidebar-brand">
-        <div class="brand-mark">E</div>
-        <span v-show="!collapsed">EOMS 运营平台</span>
+        <img class="brand-mark" src="/brand/dongyan-logo.jpg" alt="东研智联 Logo" />
+        <span v-show="!collapsed">东研智联运营平台</span>
       </div>
       <div class="sidebar-menu">
         <el-menu

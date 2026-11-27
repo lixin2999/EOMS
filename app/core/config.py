@@ -26,7 +26,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    app_name: str = "企业运营管理系统"
+    app_name: str = "东研智联科技企业运营管理系统"
     env: str = "dev"
     debug: bool = False
     secret_key: str = "eoms-dev-secret-key-change-in-production"

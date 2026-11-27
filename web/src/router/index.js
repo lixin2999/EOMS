@@ -255,7 +255,7 @@ router.beforeEach(async (to) => {
 })
 
 router.afterEach((to) => {
-  document.title = to.meta.title ? `${to.meta.title} · EOMS` : 'EOMS 企业运营管理系统'
+  document.title = to.meta.title ? `${to.meta.title} · 东研智联` : '东研智联科技企业运营管理系统'
 })
 
 export default router
